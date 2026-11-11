@@ -119,6 +119,8 @@ cameras:
       streams:
         Main: vision-ai-devkit_twoway
         Sub: vision-ai-devkit_sub
+    motion:
+      enabled: true
     detect:
       width: 640
       height: 360
@@ -141,6 +143,9 @@ cameras:
 - `audio: enabled: true` turns on audio events (by default speech, yelling, barking and fire
   alarms). Check the audio levels in Frigate's **Debug** view. If they rarely pass Frigate's
   `min_volume`, raise the camera's microphone gain or lower `min_volume`.
+- `motion: enabled: true` keeps motion detection on, as Frigate's default, even if you turn object
+  detection off. Frigate's **All Cameras** dashboard shows a still image, refreshed once a minute,
+  until it sees motion or objects, so without motion detection the camera never goes live there.
 - With audio off, the snippet leaves out `audio`, `output_args`, the `audio` role and the Opus
   copy. With talk-back off, it leaves out the `_twoway` stream and the `live` section.
 

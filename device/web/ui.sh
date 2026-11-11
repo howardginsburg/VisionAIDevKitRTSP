@@ -633,6 +633,8 @@ frigate_section() {
             printf '    live:\n      streams:\n        Main: %s_twoway\n' "$NAME"
             if [ "$SUB_ENABLED" = 1 ]; then printf '        Sub: %s_sub\n' "$NAME"; fi
         fi
+        # Frigate's dashboard only goes live on motion or objects, so keep motion on without detection.
+        printf '    motion:\n      enabled: true\n'
         if [ "$SUB_ENABLED" = 1 ]; then
             printf '    detect:\n      width: %s\n      height: %s\n      fps: %s\n' "$SUB_WIDTH" "$SUB_HEIGHT" "$SUB_FPS"
         else
