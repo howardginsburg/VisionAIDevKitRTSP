@@ -1,0 +1,13 @@
+#!/bin/sh
+# Vision AI DevKit RTSP add-on: lets the vendor LED controller (altekflow) show the stream state.
+# altekflow lights solid green ("IoT Hub connected") when `docker ps` lists an azureiotedge-agent
+# image. The boot script puts this directory first on altekflow's PATH, so that check succeeds while
+# the RTSP server reports every stream flowing (/run/vaidk/streaming) and Wi-Fi is connected.
+# Every other docker command goes to the real docker.
+if [ "$#" -eq 1 ] && [ "$1" = ps ] && [ -e /run/vaidk/streaming ] \
+    && wpa_cli -p /var/run/wpa_supplicant -i wlan0 status 2>/dev/null | grep -q '^wpa_state=COMPLETED$'; then
+    /usr/bin/docker ps
+    echo "vaidk-rtsp mcr.microsoft.com/azureiotedge-agent:vaidk-rtsp-streaming"
+    exit 0
+fi
+exec /usr/bin/docker "$@"

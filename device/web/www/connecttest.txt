@@ -1,0 +1,1 @@
+Set up your camera at http://192.168.143.1/

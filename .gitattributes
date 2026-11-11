@@ -1,0 +1,7 @@
+* text=auto
+# Files copied to the camera must keep Unix line endings.
+device/** text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=crlf
+# Compiled camera program.
+device/camera/vaidk-camd binary

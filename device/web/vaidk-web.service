@@ -1,0 +1,15 @@
+[Unit]
+Description=Vision AI DevKit setup page (port 80)
+After=network.target
+
+[Service]
+ExecStartPre=/bin/sh /opt/vaidk/web/ui.sh write-httpd-conf
+ExecStart=/bin/busybox httpd -f -p 80 -h /opt/vaidk/web/www -c /run/vaidk/httpd.conf -r "Vision AI DevKit"
+ExecReload=/bin/kill -HUP $MAINPID
+# Wi-Fi changes started from the page (wpa_supplicant, udhcpc) must survive a web server restart.
+KillMode=process
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

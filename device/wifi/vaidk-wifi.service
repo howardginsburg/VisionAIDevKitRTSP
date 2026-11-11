@@ -1,0 +1,14 @@
+[Unit]
+Description=Vision AI DevKit Wi-Fi watchdog (setup access point when Wi-Fi is unavailable)
+After=network.target
+
+[Service]
+ExecStart=/bin/sh /opt/vaidk/wifi/wifi.sh watch
+# wpa_supplicant, udhcpc and the setup access point started by the watchdog must keep running
+# when the watchdog itself restarts.
+KillMode=process
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

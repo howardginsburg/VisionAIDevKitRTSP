@@ -1,0 +1,40 @@
+# Never publish: files from a camera, your own settings, or software that isn't ours to share.
+# See "Licences and what must not be shared" in PROVENANCE.md.
+
+# The camera's own libraries (Qualcomm's qmmf clients and Android's camera metadata), copied from a
+# camera only to link vaidk-camd. No published licence.
+*.so
+*.so.*
+# The vendor boot script, and InitCamx.vaidk built from it on each camera. No licence.
+InitCamx
+InitCamx.*
+# A camera's settings, Wi-Fi network, admin account and setup-network password: /data/misc/vaidk,
+# /persist/data/wifi.bin, and copies of /opt/vaidk (which holds InitCamx.vaidk).
+vaidk/
+vaidk.conf
+wpa_supplicant.conf
+wifi.bin
+# Partition images and backups hold all of the above, plus the camera's SSH host keys.
+*.img
+backup/
+backups/
+# Recordings and logs can capture your home, its sounds and your network's names.
+*.mp4
+*.mkv
+*.h264
+*.h265
+*.aac
+*.wav
+*.log
+
+# The build toolchain: build.ps1 downloads it from Arm into its cache.
+gcc-linaro-*/
+*.tar.xz
+
+# Clutter from operating systems, editors and Python.
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+__pycache__/
+*.pyc

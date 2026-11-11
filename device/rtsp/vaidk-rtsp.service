@@ -1,0 +1,12 @@
+[Unit]
+Description=Vision AI DevKit RTSP server (main :8900, sub :8901)
+After=network.target
+
+[Service]
+ExecStartPre=/bin/sh /opt/vaidk/rtsp/net.sh
+ExecStart=/usr/bin/python3 /opt/vaidk/rtsp/rtspd.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

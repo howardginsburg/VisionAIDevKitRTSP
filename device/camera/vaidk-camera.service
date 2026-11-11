@@ -1,0 +1,13 @@
+[Unit]
+Description=Vision AI DevKit camera (vaidk-camd)
+After=qmmf-server.service qmmf-webserver.service vaidk-rtsp.service
+Wants=qmmf-server.service vaidk-rtsp.service
+
+[Service]
+ExecStart=/bin/sh /opt/vaidk/camera/camd.sh
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
