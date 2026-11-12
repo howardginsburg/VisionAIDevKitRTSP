@@ -207,7 +207,8 @@ mutes its microphones meanwhile.
 
 The camera has no motors, so it pans, tilts and zooms digitally: both streams show part of its
 3840x2160 sensor picture, and Frigate and Home Assistant move that view with their PTZ controls, over
-ONVIF (port 8080).
+ONVIF (port 8080). Zoom in first: at the whole picture there is nothing to pan or tilt to, so the
+arrows and clicks do nothing until the view is zoomed.
 
 - **Frigate:** with the snippet's `onvif` part, the camera's live view gets arrows, zoom buttons and
   the presets, and you can click on the picture to centre the view there. Frigate reads the presets
@@ -354,6 +355,7 @@ also removes everything.
 - **No pan, tilt and zoom controls in Frigate:** check that the setup page shows pan, tilt and zoom
   as on, and that Frigate's configuration has the snippet's `onvif` part with the empty `user` and
   `password`; then look for ONVIF errors in Frigate's log. New presets appear after Frigate restarts.
+- **The arrows don't move the view:** zoom in first ([why](#pan-tilt-and-zoom)).
 - **Recordings show only part of the picture:** the view is zoomed. Select **Show the whole picture**
   on the setup page, or go to a preset.
 
