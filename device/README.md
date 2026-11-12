@@ -12,6 +12,7 @@ Everything in this folder is copied to `/opt/vaidk` on the camera by the install
 | [Pan, tilt and zoom](onvif/README.md) | `onvif/` | The ONVIF service on port 8080: Frigate and Home Assistant find the streams and move the digital view through it | `vaidk-onvif.service` |
 | [Wi-Fi](wifi/README.md) | `wifi/` | Keeps Wi-Fi connected, opens the setup network when it can't, joins new networks | `vaidk-wifi.service` |
 | [Setup page](web/README.md) | `web/` | First-time setup on the setup network, and settings at `http://<camera-ip>/` | `vaidk-web.service` |
+| [Crash recovery](recovery/README.md) | `recovery/` | Has the kernel restart the camera after a crash, instead of leaving it unresponsive | `vaidk-recovery.service` |
 | [Status lights](lights/README.md) | `lights/` | Makes the vendor's "IoT Hub connected" light mean "streaming" | The vendor LED controller, `altekflow` |
 
 The camera program's source and build script are in [camd/](../camd/README.md); its build output is

@@ -12,7 +12,7 @@ DATA_DIR=/data/misc/vaidk
 UNIT_DIR=/lib/systemd/system
 VENDOR_BOOT=/vendor/etc/camera/InitCamx
 # Each component's systemd unit, relative to /opt/vaidk.
-UNITS="camera/vaidk-camera.service rtsp/vaidk-rtsp.service wifi/vaidk-wifi.service web/vaidk-web.service onvif/vaidk-onvif.service"
+UNITS="camera/vaidk-camera.service rtsp/vaidk-rtsp.service wifi/vaidk-wifi.service web/vaidk-web.service onvif/vaidk-onvif.service recovery/vaidk-recovery.service"
 
 log() { printf '%s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*"; exit 1; }

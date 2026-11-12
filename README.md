@@ -19,8 +19,8 @@ account, IoT Hub or SSH is needed: you install it over USB and finish setup from
   `http://<camera-ip>/` to change the streams, audio, picture, on-screen text, talk-back, pan, tilt
   and zoom presets, Wi-Fi network, camera name or admin account.
 - **Recovers by itself:** if a stream stalls, the camera restarts its camera pipeline while players
-  stay connected, and if the camera can't reach its Wi-Fi network for 5 minutes it opens its setup
-  network so you can pick another one.
+  stay connected; if the camera crashes, it restarts; and if it can't reach its Wi-Fi network for 5
+  minutes, it opens its setup network so you can pick another one.
 - **Status lights:** solid green means the camera is on Wi-Fi and streaming.
 - **SSH (optional):** the admin account also signs in over SSH.
 
@@ -60,8 +60,8 @@ minutes the camera opens its setup Wi-Fi network and the installer prints its na
 > [!WARNING]
 > Once the installer has finished, move the camera from your computer to its power supply. A
 > computer's USB port gives it 500 mA, less than it uses while streaming: the battery runs down even
-> though the setup page shows it as charging, and once it is flat the camera stops and has to be
-> started again with its power button ([Troubleshooting](#troubleshooting)).
+> though the setup page shows it as charging, and once it is flat the camera stops
+> ([Troubleshooting](#troubleshooting)).
 
 ## Set up the camera
 
@@ -301,8 +301,8 @@ and lets you:
 
 Picture, speaker volume, microphone muting and presets apply straight away; the other changes restart
 the streams, except turning pan, tilt and zoom on or off, which restarts only that service. Settings
-the page doesn't show, such as the keyframe interval and the Wi-Fi fallback timers, can be changed by
-hand ([how](device/README.md#settings)).
+the page doesn't show, such as the keyframe interval, the Wi-Fi fallback timers and restarting after a
+crash, can be changed by hand ([how](device/README.md#settings)).
 
 ## Status lights
 
@@ -313,7 +313,7 @@ hand ([how](device/README.md#settings)).
 | Amber | Not connected to Wi-Fi |
 | Blinking green | On Wi-Fi; streams are starting or recovering |
 | Solid green | On Wi-Fi and streaming |
-| Off | Switched off. If it should be on, its battery may have run flat ([Troubleshooting](#troubleshooting)) |
+| Off | The battery has run flat, or the camera has stopped responding ([Troubleshooting](#troubleshooting)) |
 
 ## Change Wi-Fi networks or reset
 
@@ -349,14 +349,14 @@ also removes everything.
   listed.
 - **Status from USB:** `adb shell sh /opt/vaidk/web/ui.sh info`, and for the streams
   `adb shell cat /run/vaidk/rtsp.status`.
-- **Logs:** `adb shell journalctl -u vaidk-camera -u vaidk-rtsp -u vaidk-onvif -u vaidk-wifi -u vaidk-web --no-pager -n 50`
+- **Logs:** `adb shell journalctl -u vaidk-camera -u vaidk-rtsp -u vaidk-onvif -u vaidk-wifi -u vaidk-web -u vaidk-recovery --no-pager -n 50`
 - **Boot log:** `adb shell cat /data/misc/wifi/docker_boot`
 - **The camera stopped and its lights are off:** its battery may have run flat, for example on a
   computer's USB port. Plug it into its power supply and hold the power button until the lights turn
-  red. If they're still off after 15 seconds, let go: holding it that long switches the camera fully
-  off. Wait 5 seconds, then hold the button again until the lights turn red. If nothing lights up,
-  let it charge for half an hour and try again. As a last resort, press the reset button in the
-  pinhole on the right side with a paperclip.
+  red, for up to 15 seconds: holding it starts a camera that is off, and after about 12 seconds it
+  restarts one that has stopped responding. If nothing lights up, let it charge for half an hour and
+  try again. As a last resort, press the reset button in the pinhole on the right side with a
+  paperclip.
 - **No picture:** test the main stream with VLC (**Media > Open Network Stream**) and check that the
   lights are solid green.
 - **No sound:** check that the setup page shows the microphone as on, then raise the gain. The
@@ -392,8 +392,8 @@ also removes everything.
 The add-on keeps the camera's own firmware and its Qualcomm camera service, `qmmf-server`, and
 replaces everything above it. A small native program, `vaidk-camd`, runs the camera, the microphone
 and the speaker; a Python RTSP server serves the streams and the talk-back channel; a Python ONVIF
-service moves the digital view; shell scripts run Wi-Fi, the setup page and the boot sequence,
-without the retired IoT Hub step. Nothing needs Azure or any other cloud service.
+service moves the digital view; shell scripts run Wi-Fi, the setup page, crash recovery and the boot
+sequence, without the retired IoT Hub step. Nothing needs Azure or any other cloud service.
 
 ## Documentation
 
@@ -402,7 +402,7 @@ without the retired IoT Hub step. Nothing needs Azure or any other cloud service
 | [ARCHITECTURE.md](ARCHITECTURE.md) | How the pieces fit together: layers, data flow, settings, boot, install and the camera's states |
 | [ASSESSMENT.md](ASSESSMENT.md) | The camera as it came: hardware, software, and why it stopped working out of the box |
 | [PROVENANCE.md](PROVENANCE.md) | How each feature was made to work without Azure, how it was tested, and where every piece comes from |
-| [device/README.md](device/README.md) | The add-on on the camera, with a README for each component: boot script, camera, RTSP server, pan, tilt and zoom, Wi-Fi, setup page, status lights |
+| [device/README.md](device/README.md) | The add-on on the camera, with a README for each component: boot script, camera, RTSP server, pan, tilt and zoom, Wi-Fi, setup page, crash recovery, status lights |
 | [camd/README.md](camd/README.md) | The camera program, `vaidk-camd`, and how to rebuild it |
 
 ## License

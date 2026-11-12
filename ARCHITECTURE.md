@@ -26,7 +26,7 @@ the add-on is installed, set up and removed.
 %%{init: {"flowchart": {"wrappingWidth": 420}}}%%
 flowchart TB
     you["You<br/>Frigate, Home Assistant, VLC or another RTSP player · a browser<br/>the installers over USB · SSH, optional"]
-    addon["The add-on, in /opt/vaidk<br/>camera program · RTSP server · ONVIF service · Wi-Fi watchdog<br/>setup page · boot script · status-light stand-in"]
+    addon["The add-on, in /opt/vaidk<br/>camera program · RTSP server · ONVIF service · Wi-Fi watchdog<br/>setup page · boot script · status-light stand-in · crash recovery"]
     vendor["The camera's own software, kept<br/>qmmf-server with the camera and audio HALs<br/>altekflow · Wi-Fi tools · sshd · adbd"]
     fw["Qualcomm firmware and Linux 4.9, unchanged<br/>32-bit, read-only root file system"]
     hw["Vision AI DevKit<br/>Qualcomm QCS603 · 8 MP Sony IMX334 sensor<br/>microphones · speaker · Wi-Fi · three lights · power button"]
@@ -58,7 +58,7 @@ flowchart TB
   and changes a few things around them: its own copy of the boot script runs instead of the
   vendor's, the vendor preview server is disabled, `qmmf-server` gets a time zone, and the admin
   account is an ordinary Linux user.
-- **The add-on.** Five systemd services and the boot script, in `/opt/vaidk`. Your settings are in
+- **The add-on.** Six systemd services and the boot script, in `/opt/vaidk`. Your settings are in
   `/data/misc/vaidk`.
 - **You.** RTSP players and NVRs, a browser for the setup page, the installers over USB, and SSH if
   you want it.
@@ -73,6 +73,7 @@ flowchart TB
 | Pan, tilt and zoom | `vaidk-onvif.service` | `onvifd.py`: the ONVIF service on port 8080, through which Frigate and Home Assistant find the streams and move the digital view; keeps the view and presets | [device/onvif](device/onvif/README.md) |
 | Wi-Fi | `vaidk-wifi.service` | Keeps Wi-Fi connected, opens the setup network when it can't, joins new networks | [device/wifi](device/wifi/README.md) |
 | Setup page | `vaidk-web.service` | First-time setup and settings, on port 80 | [device/web](device/web/README.md) |
+| Crash recovery | `vaidk-recovery.service` | `recovery.sh`, once at boot: turns off Qualcomm's crash-dump mode and has the kernel restart the camera after a crash | [device/recovery](device/recovery/README.md) |
 | Status lights | The vendor's `altekflow` | A stand-in for `docker` makes the "IoT Hub connected" light mean "streaming" | [device/lights](device/lights/README.md) |
 
 The vendor software the add-on relies on, and what it does now:
@@ -287,6 +288,7 @@ flowchart LR
 | `WIFI_COUNTRY` | `ui.sh`, which writes it into each Wi-Fi network it saves; `wifi.sh scan` | For the next network saved |
 | `LOCK_CONTROL_API` | `net.sh` | When `vaidk-rtsp` starts. Rules already in place stay until the next boot |
 | `ONVIF`, `ONVIF_PORT` | `onvif.sh`; `ui.sh` (the page and the Frigate entry) | When `vaidk-onvif` restarts. Turning pan, tilt and zoom on or off restarts it |
+| `RESTART_ON_CRASH` | `recovery.sh` | At the next boot, or when `vaidk-recovery` restarts |
 
 Besides the settings, the add-on keeps:
 
@@ -318,6 +320,7 @@ flowchart TB
     svc --> rtsp["vaidk-rtsp<br/>net.sh, then rtspd.py"]
     svc --> web["vaidk-web<br/>the setup page"]
     svc --> watch["vaidk-wifi<br/>waits for boot-wifi-done"]
+    svc --> recovery["vaidk-recovery<br/>restart after a crash"]
     qmmf --> cam["vaidk-camera<br/>waits for the audio calibration, then vaidk-camd"]
     rtsp --> cam
     cam --> streaming["Streaming"]
@@ -325,7 +328,7 @@ flowchart TB
     classDef mod fill:#dae8fc,stroke:#6c8ebf,color:#1a1a1a
     classDef os fill:#fff2cc,stroke:#d6b656,color:#1a1a1a
     classDef use fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
-    class init,join,done,rtsp,web,watch,cam,onvif mod
+    class init,join,done,rtsp,web,watch,recovery,cam,onvif mod
     class ap,rest,altek,svc,qmmf os
     class power,saved,streaming use
 ```
@@ -335,7 +338,8 @@ flowchart TB
   drop-in points `InitCamx.service` at the copy.
 - **The services start alongside it.** Two of them wait: the Wi-Fi watchdog waits for the boot
   script's Wi-Fi step, and the camera service waits for the vendor media server's audio calibration
-  ([start-up](device/camera/README.md#start-up)). The ONVIF service starts after the camera service.
+  ([start-up](device/camera/README.md#start-up)). The ONVIF service starts after the camera service,
+  and crash recovery runs once, as soon as `/data` is mounted.
 - **At shutdown** the boot script does nothing. The vendor's ran its whole boot sequence again.
 
 Where the add-on lives:
@@ -343,7 +347,7 @@ Where the add-on lives:
 | Location | File system | What |
 |---|---|---|
 | `/opt/vaidk` | The root, read-only (`mmcblk0p14`) | The add-on. It is on the root because `/data` is mounted `noexec`, so `vaidk-camd` couldn't run from there |
-| `/lib/systemd/system` | The root | The five units, the boot script's drop-in in `InitCamx.service.d/`, and the time zone drop-in in `qmmf-server.service.d/` |
+| `/lib/systemd/system` | The root | The six units, the boot script's drop-in in `InitCamx.service.d/`, and the time zone drop-in in `qmmf-server.service.d/` |
 | `/home/<admin>` | The root | The admin account's home directory, when the add-on created the account |
 | `/data/misc/vaidk` | `/data`, read-write | Your settings, Wi-Fi network, admin account record, and the pan, tilt and zoom presets |
 | `/run/vaidk` | RAM | [Run-time files](#run-time-files) |
@@ -466,5 +470,6 @@ device/                      everything copied to /opt/vaidk on the camera; devi
   onvif/                     onvifd.py, onvif.sh and the unit
   wifi/                      wifi.sh and the unit
   web/                       ui.sh, www/ (the setup page's files) and the unit
+  recovery/                  recovery.sh and the unit
   lights/                    the docker stand-in for altekflow
 ```

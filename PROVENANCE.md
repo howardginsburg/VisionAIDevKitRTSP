@@ -28,6 +28,7 @@ Every piece of the add-on is one of three kinds:
 - [Pan, tilt and zoom](#pan-tilt-and-zoom)
 - [How it was tested](#how-it-was-tested)
 - [Status lights](#status-lights)
+- [Restart after a crash](#restart-after-a-crash)
 - [Setup page and admin account](#setup-page-and-admin-account)
 - [Installing over USB](#installing-over-usb)
 - [Where every component comes from](#where-every-component-comes-from)
@@ -390,6 +391,46 @@ other `docker` command goes to the real one, including `altekflow`'s reset steps
 | Replace `altekflow` | Rejected: without its source, the power button, the battery protection and the reset would have to be rebuilt |
 | Drive the lights directly | Rejected: `altekflow` drives the same lights |
 | **Change what `altekflow`'s check sees** | Chosen: one small script, on `altekflow`'s `PATH` only |
+
+## Restart after a crash
+
+**Files**: `device/recovery/`. Authored.
+
+**In the way.** A flat battery crashed the camera: below about 2.7 V its internal storage stopped
+responding, `qmmf-server` died and the kernel reported an error
+([ASSESSMENT.md](ASSESSMENT.md#features-beyond-the-streams)). The camera stayed unresponsive, lights
+off, even once it was on a charger, until its power button was held the next morning. Out of the box
+the kernel carries on after an error (`panic_on_oops` 0) and never gives up on a stuck task
+(`hung_task_panic` 0), so nothing restarts a camera in that state. Qualcomm's crash-dump mode is on
+too (`download_mode` 1), in which, by Qualcomm's design, a panic waits for a PC to collect a memory
+dump instead of restarting.
+
+**What the add-on does.** At each boot, `recovery.sh` turns crash-dump mode off, then has the kernel
+panic on an error or on a task stuck for 2 minutes, and restart 5 s after a panic
+([device/recovery/README.md](device/recovery/README.md)).
+
+| Option | Outcome |
+|---|---|
+| **Restart after a kernel error or a stuck task** | Chosen: the kernel's own settings, applied at each boot; nothing is written to the firmware |
+| A watchdog that the system must keep resetting (systemd's `RuntimeWatchdogSec`) | Not possible: the kernel's watchdog (`msm_watchdog`) offers no `/dev/watchdog` |
+| Shut down cleanly before the battery runs flat, and start again when power returns | Built, tested and dropped: a shutdown ends in a restart, with or without a charger, so the camera would restart over and over until the battery ran out |
+| Ship mode, in which the charger disconnects the battery until power returns | Not used: the charger driver offers it read-only, and it takes effect at a shutdown, which restarts the camera instead |
+| Change the power chip's or the bootloader's start-up settings | Not needed: the power chip is already set to start the camera when a charger is plugged in, and the bootloader's charging screen is off |
+
+Tested on the camera, on its 1.5 A charger unless stated:
+
+| Test | Result |
+|---|---|
+| A kernel crash (`echo c > /proc/sysrq-trigger`) | Back on the network about 40 s after the crash, and streaming within 2 minutes, with the settings applied again at boot |
+| `systemctl poweroff` | Back by itself after about 2 minutes. The power chip recorded a hard reset with the charger present (`PON_REASON1` `0x11`), after a shutdown by the processor (`PS_HOLD`) |
+| The same on battery, with the charger unplugged | Back by itself after about 2 minutes: a hard reset again (`PON_REASON1` `0x01`) |
+| `RESTART_ON_CRASH=0`, then back to `1` | The vendor's values, then the add-on's, each time the service restarted; the settings file unchanged |
+| `RESTART_ON_CRASH=0` in the settings file, then a restart | The camera started with the vendor's values. `vaidk-recovery` ran 9.6 s into the boot, after `/data` was mounted (8.8 s) |
+| Normal running: more than four hours of streaming with these settings | No restart; the kernel reported no error, warning or stuck task (`/proc/sys/kernel/tainted`, `hung_task_warnings`) |
+| The power button, held | Not run as a test. The power chip's settings restart the camera 12.3 s into a hold (its stage-2 reset, a hard reset), and the hold the morning after the crash ended that way: the power chip recorded a power-off by the power button, then a start by hard reset (`PON_REASON1` `0x91`: power button, charger and hard reset) |
+
+Not tested: the camera starting by itself when a charger is plugged in after the battery has run
+flat.
 
 ## Setup page and admin account
 

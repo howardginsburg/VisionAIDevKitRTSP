@@ -23,8 +23,8 @@ Everything else was read from the camera itself.
 | Wi-Fi | Qualcomm WCN3980, 802.11ac 1×1 (`wlan` driver): `wlan0` (client), `p2p0`, and `softap0` while the setup network is open |
 | Bluetooth | Bluetooth 5 (BLE) in the specifications. Unused |
 | Lights | Three, each red and green (`/sys/class/leds/led1` to `led3`) |
-| Buttons | The power button (`qpnp_pon`) and `gpio-keys` |
-| Power | USB-C power, and PoE in the specifications. A 1,372 mAh Li-ion battery (44 % and charging when first read) |
+| Buttons | The power button (`qpnp_pon`) and `gpio-keys`. Held for about 12 s (10.3 s, then 2 s), the power button makes the power chip restart the camera, whatever the software is doing |
+| Power | USB-C power, and PoE in the specifications. A 1,372 mAh Li-ion battery (44 % and charging when first read). The power chip (PM660) is set to start the camera when the power button is pressed or a charger is plugged in, and the bootloader's charging screen is off. A shutdown ends in a restart: the power chip records a hard reset, with or without a charger |
 | Display | HDMI through a USB-C adapter in the specifications: a Lontium LT9611 DSI-to-HDMI bridge on the board, behind the DSI output (`card0-DSI-1`, 1920x1080 and 3840x2160 modes). Linux runs `weston`. Unused |
 | Thermal | 47 thermal zones. The vendor's `altekflow` powers the camera off when the battery overheats |
 
@@ -33,7 +33,7 @@ Everything else was read from the camera itself.
 | Item | Finding |
 |---|---|
 | Firmware | `v0.5370_Perf` (`/etc/version`; `/etc/os-release` names the product `concam`). Qualcomm meta build `QCS605.LE.1.0-00037-STD.PROD-1`, apps `LE.UM.2.3.3.r1-04300-QCS605.0-1`; DSP firmware built for the SDM710 family. **No updates**: the product is retired |
-| Kernel | Linux 4.9.123-perf, built 7 February 2020, 32-bit (`armv7l`). No initramfs. The root file system, `mmcblk0p14`, is mounted read-only but isn't verified (no dm-verity on it), so it can be remounted read-write. SELinux is permissive |
+| Kernel | Linux 4.9.123-perf, built 7 February 2020, 32-bit (`armv7l`). No initramfs. The root file system, `mmcblk0p14`, is mounted read-only but isn't verified (no dm-verity on it), so it can be remounted read-write. SELinux is permissive. The kernel carries on after an error (`panic_on_oops` 0) and never gives up on a stuck task (`hung_task_panic` 0), so nothing restarts a camera that a crash has left unresponsive; and Qualcomm's crash-dump mode is on (`download_mode` 1), in which a panic waits for a PC to collect a memory dump. The add-on changes these ([device/recovery](device/recovery/README.md)) |
 | Userland | Yocto-based: systemd 234, BusyBox 1.24.1, glibc 2.26, libstdc++ 6.0.22 (GCC 6), Python 3.5.3 with part of the standard library, OpenSSH 7.5p1, OpenSSL 1.0.2o (March 2018) |
 | Camera stack | Qualcomm's `qmmf-server`: the camera, the image processor, the H.264/H.265 encoders and the microphones, through the CamX camera HAL and the audio HAL. Two vendor front ends: `qmmf-webserver` (RTSP and an HTTP API on port 4000) and `ipc-webserver` (a preview page on port 1080, user `admin`, password `admin`) |
 | Azure | IoT Edge 1.0.8.3 (installed, not running) and Docker 3.0.5 (running). The vendor's boot script loads Microsoft's vision sample and IoT Edge containers into Docker |
@@ -110,7 +110,7 @@ worth adding. What was found, and what the add-on does with it:
 | USB camera | The USB gadget defines UVC (webcam) and UAC2 (USB audio) functions, not enabled | Unused |
 | microSD | A slot, no card | Unused |
 | Bluetooth | Bluetooth LE, reachable only through the vendor's `btapp` | Unused |
-| Battery | 1,372 mAh. On a computer's USB port it ran down while streaming even though it reported Charging (13 % to 9 % over a few hours). Left there, it ran flat: below about 2.7 V the internal storage stopped responding, the camera service and then the kernel crashed, and it took the power button to start the camera again. On a 1.5 A USB charger it charges while streaming | Shown on the setup page. Use the camera's power supply |
+| Battery | 1,372 mAh. On a computer's USB port it ran down while streaming even though it reported Charging (13 % to 9 % over a few hours). Left there, it ran flat: below about 2.7 V the internal storage stopped responding, the camera service and then the kernel crashed, and the camera stayed unresponsive, lights off, until its power button was held. On a 1.5 A USB charger it charges while streaming | Shown on the setup page. Use the camera's power supply. After a crash the camera now restarts by itself ([device/recovery](device/recovery/README.md)) |
 
 ## Conclusion: what can it be?
 

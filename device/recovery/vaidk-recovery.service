@@ -1,0 +1,11 @@
+[Unit]
+Description=Vision AI DevKit crash recovery (restart after a kernel crash)
+After=data.mount
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /opt/vaidk/recovery/recovery.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
