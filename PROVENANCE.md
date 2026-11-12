@@ -25,6 +25,7 @@ Every piece of the add-on is one of three kinds:
 - [Camera and microphone](#camera-and-microphone)
 - [RTSP streams](#rtsp-streams)
 - [Talk-back, picture and on-screen text](#talk-back-picture-and-on-screen-text)
+- [Pan, tilt and zoom](#pan-tilt-and-zoom)
 - [How it was tested](#how-it-was-tested)
 - [Status lights](#status-lights)
 - [Setup page and admin account](#setup-page-and-admin-account)
@@ -275,11 +276,53 @@ a temporary systemd drop-in.
 **Rotation** was the fourth candidate, and was dropped: the camera ignores it
 ([camd/README.md](camd/README.md#things-learned-about-qmmf)).
 
+## Pan, tilt and zoom
+
+**Files**: `device/onvif/`, the crop in `camd/image.cpp`, `SIGUSR2` and `CAMD_PTZ` in
+`camd/camd.cpp`, and the **Pan, tilt and zoom** section of `device/web/ui.sh`. Authored.
+
+**How it was chosen.** The camera's request settings include a crop region on the sensor
+(`android.scaler.cropRegion`) and a maximum digital zoom of 8. A test program set it on the running
+camera: both streams followed within a frame or two, centred or off-centre, without restarting. A
+zoom only helps if Frigate and Home Assistant can drive it, and both drive cameras through ONVIF
+PTZ, so the add-on presents the crop as an ONVIF PTZ camera.
+
+**What the clients need.** Frigate 0.18's `frigate/ptz/onvif.py` and Home Assistant's
+`homeassistant/components/onvif/device.py` were read for what they call and check, along with the
+library both use, `onvif-zeep-async` (Frigate pins 4.0; Home Assistant uses the latest, 4.3):
+- **Discovery.** `GetServices`, or `GetCapabilities` in 4.0. The device service's address is fixed
+  at `/onvif/device_service`.
+- **Frigate** takes the first profile with a video encoder and a PTZ configuration that has a
+  continuous velocity space. Its controls come from the configuration's default spaces: arrows,
+  zoom buttons, and click-to-move when a `TranslationSpaceFov` space is offered. Its buttons send
+  `ContinuousMove` at half speed and `Stop`. It goes to presets with `GotoPreset`, reads them only
+  when it starts, and can't save them. Imaging, snapshots and events are optional.
+- **Home Assistant** reads the serial number, the MAC address (its ID for the camera), whether there
+  is a snapshot URL, the H.264 profiles and their stream URLs, and the presets. Its `onvif.ptz`
+  action sends relative moves by default, and ends a timed continuous move with
+  `Stop(PanTilt=true, Zoom=false)`.
+- **The library** always sends a WS-Security header, and fails before sending anything when the user
+  is missing (`None`). So Frigate's configuration gives an empty user and password.
+
+| Question | Options | Chosen |
+|---|---|---|
+| How to zoom | Scaling in the RTSP server; the encoders' own crop; the camera's crop region | The crop region: both streams follow at the sensor's full detail, and it changes on the running camera |
+| How Frigate and Home Assistant control it | Their PTZ support (ONVIF); a new API | ONVIF: both already speak it |
+| Which program serves ONVIF | `rtspd.py`; `vaidk-camd`; a service of its own | A Python service of its own: it can be turned off, and a fault in it never touches the streams |
+| How a move reaches `vaidk-camd` | The live settings file and `SIGHUP`; a file and signal of its own | Its own (`/run/vaidk/ptz.conf`, `SIGUSR2`): moves update ten times a second, without re-applying the picture settings |
+| Password | WS-Security user tokens; none | None, like the streams |
+| `Stop` with `Zoom=false` | As specified: the zoom carries on; stop everything | Stop everything, as many cameras do, so Home Assistant's timed zooms stop |
+| Zoom limit | The camera's 8x; 4x | 4x: beyond 2x the 1080p stream enlarges pixels |
+
+**Snapshots** were tried first, for ONVIF's snapshot URL, and dropped: every way of taking a still
+picture disturbed or broke the streams
+([ASSESSMENT.md](ASSESSMENT.md#features-beyond-the-streams)).
+
 ## How it was tested
 
 On the camera described in [ASSESSMENT.md](ASSESSMENT.md), on its Wi-Fi network, with `ffprobe` and
 `ffmpeg` on a PC. "Frigate's arguments" means ffmpeg run with the input and output arguments Frigate
-uses for recording and detection; no Frigate server was involved.
+uses for recording and detection, without a Frigate server.
 
 | Test | Result |
 |---|---|
@@ -306,10 +349,19 @@ uses for recording and detection; no Frigate server was involved.
 | The same at 4K, 8 Mbps, with a 720p sub stream | Recording 29.2 frames/s at about 8,000 kbps, detection 5.07 fps, no errors; `qmmf-server` 24 % |
 | CPU during talk-back | `qmmf-server` 30 % (its player too), `vaidk-camd` 1 %, `rtspd.py` 2 % |
 | The setup page's new forms, posted on the camera | Picture settings applied at once; volume and muting reached the live file; a value not offered, or two values in one field, was refused and left the settings file unchanged; a new time zone rewrote the drop-in, restarted `qmmf-server` and showed on the video |
+| A Frigate 0.18 server, with the setup page's configuration | The camera worked in Frigate. Its **All Cameras** tile went live only once motion detection was on, which the configuration now does |
+| Frigate 0.18's ONVIF set-up and controls, replayed with `onvif-zeep-async` 4.0.4 (the version Frigate pins), and Home Assistant's with 4.3.0 | Frigate found both profiles and the controls `pt`, `zoom`, `pt-r`, `zoom-r`, `zoom-a` and `pt-r-fov`. Its zoom, pan and tilt buttons, click-to-move, presets and home all moved the view as expected. Home Assistant's set-up, relative, absolute and continuous moves, and its `Stop(Zoom=false)`, worked. Unsupported requests, unknown presets and profiles, and oversized or stalled requests got faults or were closed, and the service carried on |
+| The view, measured on frames from both streams (each matched against parts of the whole picture) | 2x centred, in the corners and off-centre, and 4x centred and in a corner: every view matched the requested part on both streams (r 0.86 to 0.98). Back at the whole picture, r 0.98 and 0.95 |
+| 17 s of continuous moves: zoom, pan and tilt, the view updated ten times a second | Main stream 29.7 fps, sub 5.0 fps; the longest gap between frames 103 ms on the main stream (101 ms without moves); no lost packets |
+| The view and presets through a restart of the ONVIF service, of the camera service, and a reboot | Kept each time; `vaidk-camd` started at the kept view, and after the reboot started only once |
+| The setup page's pan, tilt and zoom forms, posted on the camera | Presets saved, used, updated and deleted, and seen by Frigate's request; bad names and tokens and a 17th preset refused. Off showed the whole picture (r 1.00 against it, 0.12 at 2x before); on brought the view and presets back |
+| The Frigate 0.18 server again, with the snippet's `onvif` part added in its configuration and applied without a restart; Frigate's commands sent over its websocket API, as its live view sends them | Frigate listed all six controls and the camera's preset. Its zoom, pan, tilt, click-to-move and preset commands each moved the view on the camera as expected, with no ONVIF warnings in Frigate's log |
 
 Not tested yet:
-- A Frigate server, go2rtc or Home Assistant. Talk-back was tested with a client that follows
-  go2rtc's RTSP code, not with go2rtc itself, and not from a browser.
+- Talk-back from a browser through Frigate or Home Assistant. It was tested with a client that
+  follows go2rtc's RTSP code.
+- Home Assistant's own pan, tilt and zoom controls. Its ONVIF code was replayed against the camera
+  with the library version it uses.
 - The sign-in page that phones open by themselves on the setup network (the captive portal).
 - Holding the power button for 5 s with the add-on installed.
 - `install.sh` on macOS or Linux. It was run in Git Bash on Windows.

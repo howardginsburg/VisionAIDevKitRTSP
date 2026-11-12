@@ -7,8 +7,9 @@
 //
 // In the other direction it plays talk-back audio from the RTSP server's backchannel on the speaker
 // (talkback.cpp). Settings come from environment variables (see device/camera/camd.sh); the ones
-// that can change while streaming are re-read from CAMD_LIVE on SIGHUP, and SIGUSR1 plays a test
-// chime. Each message on the socket is a 28-byte little-endian Header followed by the payload;
+// that can change while streaming are re-read from CAMD_LIVE on SIGHUP, SIGUSR1 plays a test chime,
+// and SIGUSR2 re-reads the digital pan, tilt and zoom position from CAMD_PTZ (the ONVIF service writes
+// it). Each message on the socket is a 28-byte little-endian Header followed by the payload;
 // stream 0 carries "key=value" lines describing the streams and is sent first on every connection.
 // camd exits when the camera pipeline fails or stops delivering frames; systemd then starts it with
 // a fresh session.
@@ -67,6 +68,7 @@ std::atomic<bool> g_stop(false);
 std::atomic<bool> g_failed(false);
 std::atomic<bool> g_reload(false);
 std::atomic<bool> g_chime(false);
+std::atomic<bool> g_ptz(false);
 
 struct VideoConfig {
   bool enabled;
@@ -81,7 +83,7 @@ struct Config {
   uint32_t camera_fps, keyframe_seconds, debug;
   bool overlay_time, overlay_name, overlay_sub;
   overlay::OverlayLocationType time_corner, name_corner;
-  std::string name, socket_path, talk_path, on_start, live_path, raw_metadata;
+  std::string name, socket_path, talk_path, on_start, live_path, ptz_path, raw_metadata;
   bool dump_metadata;
 };
 
@@ -126,6 +128,7 @@ Config load_config() {
   c.talk_path = env_str("CAMD_TALK", "");
   c.on_start = env_str("CAMD_ON_START", "");
   c.live_path = env_str("CAMD_LIVE", "/run/vaidk/camd.conf");
+  c.ptz_path = env_str("CAMD_PTZ", "/run/vaidk/ptz.conf");
   c.raw_metadata = env_str("CAMD_SET", "");
   c.dump_metadata = env_u32("CAMD_METADATA", 0) == 1;
   return c;
@@ -341,6 +344,25 @@ class Camera {
   void apply_image(std::map<std::string, std::string> settings) {
     if (!cfg_.raw_metadata.empty()) settings["RAW"] = cfg_.raw_metadata;
     note("image: %s", image_.apply(recorder_, kCameraId, settings).c_str());
+  }
+
+  // Applies the digital pan, tilt and zoom position (ZOOM, ZOOM_X, ZOOM_Y); no file means the whole
+  // picture. Moves update it up to ten times a second, so only the first position and errors are
+  // logged (every one with CAMD_DEBUG).
+  void apply_ptz(const std::string &path) {
+    std::map<std::string, std::string> p = read_settings(path);
+    auto number = [&p](const char *key, double fallback) {
+      auto it = p.find(key);
+      return it == p.end() || it->second.empty() ? fallback : atof(it->second.c_str());
+    };
+    double zoom = number("ZOOM", 1), x = number("ZOOM_X", 50), y = number("ZOOM_Y", 50);
+    std::string region, error = image_.crop(recorder_, kCameraId, zoom, x, y, &region);
+    if (!error.empty()) {
+      note("zoom: %s", error.c_str());
+    } else if (!ptz_logged_ || cfg_.debug) {
+      note("zoom: %.2fx at %.0f%% across, %.0f%% down (crop %s)", zoom, x, y, region.c_str());
+      ptz_logged_ = true;
+    }
   }
 
   void stop() {
@@ -583,6 +605,7 @@ class Camera {
   uint32_t debug_left_[kStreams] = {0, 0, 0, 0};
   uint64_t started_us_ = 0;
   int64_t clock_offset_us_ = 0;
+  bool ptz_logged_ = false;
 };
 
 }  // namespace
@@ -599,6 +622,8 @@ int main() {
   sigaction(SIGHUP, &sa, nullptr);
   sa.sa_handler = [](int) { g_chime = true; };
   sigaction(SIGUSR1, &sa, nullptr);
+  sa.sa_handler = [](int) { g_ptz = true; };
+  sigaction(SIGUSR2, &sa, nullptr);
 
   Config cfg = load_config();
   Output out(cfg.socket_path);
@@ -616,6 +641,7 @@ int main() {
     status = 1;
   } else {
     apply_live();
+    camera.apply_ptz(cfg.ptz_path);
     // With a talk-back socket, the RTSP server offers a backchannel and sends what arrives there.
     std::string info = camera.describe();
     if (talk.start(cfg.talk_path) && !cfg.talk_path.empty()) info += "talk=" + cfg.talk_path + "\n";
@@ -633,6 +659,7 @@ int main() {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
       if (g_reload.exchange(false)) apply_live();
       if (g_chime.exchange(false)) talk.chime();
+      if (g_ptz.exchange(false)) camera.apply_ptz(cfg.ptz_path);
       if (const char *name = camera.stalled()) {
         note("no frames from the %s stream for %llu s; restarting the camera", name,
              static_cast<unsigned long long>(kStallUs / 1000000));

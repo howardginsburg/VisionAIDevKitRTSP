@@ -1,0 +1,11 @@
+[Unit]
+Description=Vision AI DevKit ONVIF service (digital pan, tilt and zoom)
+After=network.target vaidk-camera.service
+
+[Service]
+ExecStart=/bin/sh /opt/vaidk/onvif/onvif.sh
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

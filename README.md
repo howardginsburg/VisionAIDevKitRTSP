@@ -11,11 +11,13 @@ account, IoT Hub or SSH is needed: you install it over USB and finish setup from
 - **Talk-back:** the camera's speaker plays what you say from Frigate's live view or Home
   Assistant's Advanced Camera Card, through a standard two-way audio channel on the main stream. The
   microphones mute while it plays, so you don't hear yourself.
+- **Pan, tilt and zoom:** Frigate's and Home Assistant's PTZ controls move a digital view of the
+  camera's 4K picture, up to 4x, over ONVIF. Presets are saved on the setup page.
 - **Picture and on-screen text:** anti-flicker, exposure, white balance, colour and sharpness
   change on the fly; the date, time and camera name can be burned into the video.
 - **Setup page:** first-time setup happens on the camera's own Wi-Fi network. Afterwards, open
-  `http://<camera-ip>/` to change the streams, audio, picture, on-screen text, talk-back, Wi-Fi
-  network, camera name or admin account.
+  `http://<camera-ip>/` to change the streams, audio, picture, on-screen text, talk-back, pan, tilt
+  and zoom presets, Wi-Fi network, camera name or admin account.
 - **Recovers by itself:** if a stream stalls, the camera restarts its camera pipeline while players
   stay connected, and if the camera can't reach its Wi-Fi network for 5 minutes it opens its setup
   network so you can pick another one.
@@ -119,6 +121,11 @@ cameras:
       streams:
         Main: vision-ai-devkit_twoway
         Sub: vision-ai-devkit_sub
+    onvif:
+      host: 192.168.1.50
+      port: 8080
+      user: ""
+      password: ""
     motion:
       enabled: true
     detect:
@@ -146,8 +153,13 @@ cameras:
 - `motion: enabled: true` keeps motion detection on, as Frigate's default, even if you turn object
   detection off. Frigate's **All Cameras** dashboard shows a still image, refreshed once a minute,
   until it sees motion or objects, so without motion detection the camera never goes live there.
+- `onvif` gives Frigate's live view its pan, tilt and zoom controls ([below](#pan-tilt-and-zoom)).
+  Keep the empty `user` and `password`: without a user, Frigate's ONVIF library fails before it
+  sends anything. Add the block in Frigate's configuration editor; Frigate's configuration API
+  deletes a setting that is given an empty value.
 - With audio off, the snippet leaves out `audio`, `output_args`, the `audio` role and the Opus
-  copy. With talk-back off, it leaves out the `_twoway` stream and the `live` section.
+  copy. With talk-back off, it leaves out the `_twoway` stream and the `live` section. With pan,
+  tilt and zoom off, it leaves out `onvif`.
 
 ## Talk-back
 
@@ -191,6 +203,42 @@ mutes its microphones meanwhile.
   camera's echo cancellation isn't reachable through its camera service, and without muting the
   speaker comes back through the microphones about 50 dB above the room's noise.
 
+## Pan, tilt and zoom
+
+The camera has no motors, so it pans, tilts and zooms digitally: both streams show part of its
+3840x2160 sensor picture, and Frigate and Home Assistant move that view with their PTZ controls, over
+ONVIF (port 8080).
+
+- **Frigate:** with the snippet's `onvif` part, the camera's live view gets arrows, zoom buttons and
+  the presets, and you can click on the picture to centre the view there. Frigate reads the presets
+  when it starts, so restart it after saving new ones.
+- **Home Assistant:** add the camera with the
+  [ONVIF integration](https://www.home-assistant.io/integrations/onvif/): the camera's address, port
+  8080, and an empty username and password. Its `onvif.ptz` action then moves the view, for example
+  (use your camera's entity):
+
+  ```yaml
+  action: onvif.ptz
+  target:
+    entity_id: camera.vision_ai_devkit_main_stream
+  data:
+    zoom: ZOOM_IN
+    distance: 0.25
+    move_mode: RelativeMove
+  ```
+
+- **Setup page, Pan, tilt and zoom:** turn it on or off (on by default; off shows the whole
+  picture), show the whole picture, and save the current view as a preset, go to one or delete one.
+  Up to 16 presets.
+- **What the view changes:** both streams show only the view, so Frigate records and detects only
+  what it shows, and zones and masks drawn on the whole picture don't follow a zoom. Save your usual
+  view as a preset to return to it.
+- **Detail:** up to 2x, the 1080p main stream keeps the sensor's full detail; beyond that, up to 4x,
+  the picture gets softer.
+- **Kept:** the view and the presets survive restarts.
+
+How it works: [device/onvif/README.md](device/onvif/README.md).
+
 ## Picture and on-screen text
 
 The setup page's **Picture** section changes the image while the streams keep running:
@@ -231,19 +279,22 @@ steady background noise, so a quiet room sounds nearly silent and voices come th
 ## Change settings
 
 Open `http://<camera-ip>/` and sign in with the admin account. The page shows the camera's status
-(Wi-Fi, address, stream health, microphone, talk-back, temperature and battery) and lets you:
+(Wi-Fi, address, stream health, microphone, talk-back, pan, tilt and zoom, temperature and battery)
+and lets you:
 
 - change the main and sub stream resolution, frame rate, bitrate and codec;
 - turn the microphone on or off and set its gain;
 - adjust the picture, and choose the on-screen text and its time zone;
 - turn talk-back on or off, set the speaker volume and test the speaker;
+- turn pan, tilt and zoom on or off, show the whole picture, and save, use or delete presets;
 - move the camera to another Wi-Fi network;
 - rename the camera and change the admin account;
 - restart the streams or the camera, or reset it.
 
-Picture, speaker volume and microphone muting apply straight away; the other changes restart the
-streams. Settings the page doesn't show, such as the keyframe interval and the Wi-Fi fallback
-timers, can be changed by hand ([how](device/README.md#settings)).
+Picture, speaker volume, microphone muting and presets apply straight away; the other changes restart
+the streams, except turning pan, tilt and zoom on or off, which restarts only that service. Settings
+the page doesn't show, such as the keyframe interval and the Wi-Fi fallback timers, can be changed by
+hand ([how](device/README.md#settings)).
 
 ## Status lights
 
@@ -289,7 +340,7 @@ also removes everything.
   listed.
 - **Status from USB:** `adb shell sh /opt/vaidk/web/ui.sh info`, and for the streams
   `adb shell cat /run/vaidk/rtsp.status`.
-- **Logs:** `adb shell journalctl -u vaidk-camera -u vaidk-rtsp -u vaidk-wifi -u vaidk-web --no-pager -n 50`
+- **Logs:** `adb shell journalctl -u vaidk-camera -u vaidk-rtsp -u vaidk-onvif -u vaidk-wifi -u vaidk-web --no-pager -n 50`
 - **Boot log:** `adb shell cat /data/misc/wifi/docker_boot`
 - **No picture:** test the main stream with VLC (**Media > Open Network Stream**) and check that the
   lights are solid green.
@@ -300,12 +351,20 @@ also removes everything.
   on HTTPS, then look for `talk-back from` in the RTSP server's log and `speaker on` in the camera's.
 - **No talk button in Frigate:** the live view must use a stream without any `#` option (the
   `_twoway` stream), and Frigate needs WebRTC and HTTPS.
+- **No pan, tilt and zoom controls in Frigate:** check that the setup page shows pan, tilt and zoom
+  as on, and that Frigate's configuration has the snippet's `onvif` part with the empty `user` and
+  `password`; then look for ONVIF errors in Frigate's log. New presets appear after Frigate restarts.
+- **Recordings show only part of the picture:** the view is zoomed. Select **Show the whole picture**
+  on the setup page, or go to a preset.
 
 ## Security notes
 
 - The RTSP streams have no password. Keep the camera on a trusted network or VLAN.
 - The talk-back channel has no password either: anything that can reach the main stream can play
   sound on the camera's speaker. Turn talk-back off on the setup page if you don't use it.
+- The ONVIF service (port 8080) has no password either: anything on your network can move the view
+  and change the presets, which changes what Frigate records. Turn pan, tilt and zoom off on the
+  setup page if you don't use it.
 - On your network the setup page uses HTTP Basic sign-in, which is not encrypted.
 - Anyone who joins the setup network can change settings without signing in. That network is
   protected by the password on the sticker, and normally opens only when you hold the power button,
@@ -316,9 +375,9 @@ also removes everything.
 
 The add-on keeps the camera's own firmware and its Qualcomm camera service, `qmmf-server`, and
 replaces everything above it. A small native program, `vaidk-camd`, runs the camera, the microphone
-and the speaker; a Python RTSP server serves the streams and the talk-back channel; shell scripts
-run Wi-Fi, the setup page and the boot sequence, without the retired IoT Hub step. Nothing needs
-Azure or any other cloud service.
+and the speaker; a Python RTSP server serves the streams and the talk-back channel; a Python ONVIF
+service moves the digital view; shell scripts run Wi-Fi, the setup page and the boot sequence,
+without the retired IoT Hub step. Nothing needs Azure or any other cloud service.
 
 ## Documentation
 
@@ -327,7 +386,7 @@ Azure or any other cloud service.
 | [ARCHITECTURE.md](ARCHITECTURE.md) | How the pieces fit together: layers, data flow, settings, boot, install and the camera's states |
 | [ASSESSMENT.md](ASSESSMENT.md) | The camera as it came: hardware, software, and why it stopped working out of the box |
 | [PROVENANCE.md](PROVENANCE.md) | How each feature was made to work without Azure, how it was tested, and where every piece comes from |
-| [device/README.md](device/README.md) | The add-on on the camera, with a README for each component: boot script, camera, RTSP server, Wi-Fi, setup page, status lights |
+| [device/README.md](device/README.md) | The add-on on the camera, with a README for each component: boot script, camera, RTSP server, pan, tilt and zoom, Wi-Fi, setup page, status lights |
 | [camd/README.md](camd/README.md) | The camera program, `vaidk-camd`, and how to rebuild it |
 
 ## License

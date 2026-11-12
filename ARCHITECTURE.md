@@ -1,8 +1,8 @@
 # Architecture: how the add-on fits together
 
-This document shows how the pieces work together: the layers, how video, audio, talk-back and
-status flow between the parts, how settings reach them, how the camera boots, and how the add-on is
-installed, set up and removed.
+This document shows how the pieces work together: the layers, how video, audio, talk-back, pan, tilt
+and zoom, and status flow between the parts, how settings reach them, how the camera boots, and how
+the add-on is installed, set up and removed.
 - What the project is for, and how to use it: [README.md](README.md).
 - The camera as it came: [ASSESSMENT.md](ASSESSMENT.md).
 - How each feature was made to work without Azure, and where every piece comes from:
@@ -26,7 +26,7 @@ installed, set up and removed.
 %%{init: {"flowchart": {"wrappingWidth": 420}}}%%
 flowchart TB
     you["You<br/>Frigate, Home Assistant, VLC or another RTSP player · a browser<br/>the installers over USB · SSH, optional"]
-    addon["The add-on, in /opt/vaidk<br/>camera program · RTSP server · Wi-Fi watchdog<br/>setup page · boot script · status-light stand-in"]
+    addon["The add-on, in /opt/vaidk<br/>camera program · RTSP server · ONVIF service · Wi-Fi watchdog<br/>setup page · boot script · status-light stand-in"]
     vendor["The camera's own software, kept<br/>qmmf-server with the camera and audio HALs<br/>altekflow · Wi-Fi tools · sshd · adbd"]
     fw["Qualcomm firmware and Linux 4.9, unchanged<br/>32-bit, read-only root file system"]
     hw["Vision AI DevKit<br/>Qualcomm QCS603 · 8 MP Sony IMX334 sensor<br/>microphones · speaker · Wi-Fi · three lights · power button"]
@@ -58,7 +58,7 @@ flowchart TB
   and changes a few things around them: its own copy of the boot script runs instead of the
   vendor's, the vendor preview server is disabled, `qmmf-server` gets a time zone, and the admin
   account is an ordinary Linux user.
-- **The add-on.** Four systemd services and the boot script, in `/opt/vaidk`. Your settings are in
+- **The add-on.** Five systemd services and the boot script, in `/opt/vaidk`. Your settings are in
   `/data/misc/vaidk`.
 - **You.** RTSP players and NVRs, a browser for the setup page, the installers over USB, and SSH if
   you want it.
@@ -70,6 +70,7 @@ flowchart TB
 | Boot script | `InitCamx.service`, through a drop-in | The vendor's boot sequence without its IoT Hub step: joins the saved Wi-Fi network, or opens the setup network | [device/boot](device/boot/README.md) |
 | Camera program | `vaidk-camera.service` | `vaidk-camd` drives the camera, the encoders, the microphone and the speaker through `qmmf-server`, and applies the picture settings and on-screen text | [device/camera](device/camera/README.md), [camd](camd/README.md) |
 | RTSP server | `vaidk-rtsp.service` | `rtspd.py`: the main stream with audio and the talk-back channel on port 8900, the sub stream on port 8901 | [device/rtsp](device/rtsp/README.md) |
+| Pan, tilt and zoom | `vaidk-onvif.service` | `onvifd.py`: the ONVIF service on port 8080, through which Frigate and Home Assistant find the streams and move the digital view; keeps the view and presets | [device/onvif](device/onvif/README.md) |
 | Wi-Fi | `vaidk-wifi.service` | Keeps Wi-Fi connected, opens the setup network when it can't, joins new networks | [device/wifi](device/wifi/README.md) |
 | Setup page | `vaidk-web.service` | First-time setup and settings, on port 80 | [device/web](device/web/README.md) |
 | Status lights | The vendor's `altekflow` | A stand-in for `docker` makes the "IoT Hub connected" light mean "streaming" | [device/lights](device/lights/README.md) |
@@ -159,6 +160,36 @@ flowchart LR
 - **The recording stream doesn't change.** The microphone's AAC track keeps running, silent while the
   speaker plays, and Frigate records from a stream that doesn't take the backchannel.
 
+### Pan, tilt and zoom
+
+```mermaid
+flowchart LR
+    clients["Frigate · Home Assistant · NVRs"] -- "ONVIF, SOAP over HTTP :8080" --> onvifd["onvifd.py<br/>position · home · presets"]
+    page["Setup page"] -- "127.0.0.1:8080/local/ptz" --> onvifd
+    onvifd -- "kept" --> state["/data/misc/vaidk/ptz"]
+    onvifd -- "/run/vaidk/ptz.conf<br/>then SIGUSR2" --> camd["vaidk-camd"]
+    camd -- "crop region<br/>SetCameraParam" --> qmmf["qmmf-server<br/>image processor"]
+    qmmf -- "both streams<br/>scaled from the crop" --> rtspd["rtspd.py"]
+    classDef use fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
+    classDef data fill:#e1d5e7,stroke:#9673a6,color:#1a1a1a
+    classDef mod fill:#dae8fc,stroke:#6c8ebf,color:#1a1a1a
+    classDef os fill:#fff2cc,stroke:#d6b656,color:#1a1a1a
+    class clients,page use
+    class state data
+    class onvifd,camd,rtspd mod
+    class qmmf os
+```
+
+- **Digital.** The camera crops its 3840x2160 sensor picture and scales both streams from the crop,
+  up to 4x. Nothing restarts and no frame is lost while the view moves
+  ([how a move reaches the picture](device/onvif/README.md#how-a-move-reaches-the-picture)).
+- **One owner.** `onvifd.py` keeps the position, home position and presets, for ONVIF clients and the
+  setup page alike. During a continuous move it updates the view ten times a second.
+- **Kept across restarts.** `vaidk-camd` applies `/run/vaidk/ptz.conf` when it starts; after a reboot
+  `onvifd.py` writes it again from `/data/misc/vaidk/ptz`.
+- **What Frigate sees.** Both streams show the view, so Frigate records and detects the view, not the
+  whole picture.
+
 ### Status and lights
 
 ```mermaid
@@ -193,6 +224,7 @@ flowchart LR
 | `media.sock` | `rtspd.py`, which listens on it | `vaidk-camd` connects and sends the streams |
 | `talk.sock` | `vaidk-camd`, which binds it when talk-back is on | `rtspd.py` sends it the talk-back audio |
 | `camd.conf` | `camd.sh`, at start and on `camd.sh reload` | `vaidk-camd`, at start and on `SIGHUP` ([live settings](camd/README.md#live-settings)) |
+| `ptz.conf` | `onvifd.py`, whenever the view moves; `onvif.sh` deletes it when pan, tilt and zoom is off | `vaidk-camd`, at start and on `SIGUSR2` ([digital pan, tilt and zoom](camd/README.md#digital-pan-tilt-and-zoom)) |
 | `rtsp.status` | `rtspd.py`, every second | The setup page; you ([fields](device/rtsp/README.md#status)) |
 | `streaming` | `rtspd.py`, while every enabled stream flows | The light stand-in, the setup page, `ui.sh info` |
 | `boot-wifi-done` | The boot script, after its Wi-Fi step | The Wi-Fi watchdog, which waits for it; `ui.sh info` |
@@ -215,6 +247,7 @@ flowchart LR
     load --> wifi["wifi.sh"]
     load --> net["net.sh"]
     load --> ui["ui.sh"]
+    load --> onvif["onvif.sh"]
     camd -- "settings at start<br/>live ones on SIGHUP" --> prog["vaidk-camd"]
     camd -- "camd.sh tz: drop-in" --> qmmf["qmmf-server<br/>time zone"]
     classDef use fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
@@ -223,7 +256,7 @@ flowchart LR
     classDef os fill:#fff2cc,stroke:#d6b656,color:#1a1a1a
     class page,hand use
     class defaults,conf data
-    class load,camd,wifi,net,ui,prog mod
+    class load,camd,wifi,net,ui,onvif,prog mod
     class qmmf os
 ```
 
@@ -236,6 +269,8 @@ flowchart LR
   with a new value.
 - **Read at start.** Each script runs `load_settings` when it starts: the defaults first, then
   `vaidk.conf`. A change applies when the part that reads it starts again, except for the live ones.
+  `onvifd.py` reads the two files itself, and again whenever either changes, to describe the streams
+  to ONVIF clients.
 - **Live settings.** For the picture and the speaker, `camd.sh reload` writes the resolved values to
   `/run/vaidk/camd.conf` and signals `vaidk-camd`, which applies them to the running streams.
 
@@ -251,6 +286,7 @@ flowchart LR
 | `FALLBACK_AFTER`, `AP_MIN_UP`, `AP_IDLE_EXIT` | The Wi-Fi watchdog | When `vaidk-wifi` restarts, or at the next boot |
 | `WIFI_COUNTRY` | `ui.sh`, which writes it into each Wi-Fi network it saves; `wifi.sh scan` | For the next network saved |
 | `LOCK_CONTROL_API` | `net.sh` | When `vaidk-rtsp` starts. Rules already in place stay until the next boot |
+| `ONVIF`, `ONVIF_PORT` | `onvif.sh`; `ui.sh` (the page and the Frigate entry) | When `vaidk-onvif` restarts. Turning pan, tilt and zoom on or off restarts it |
 
 Besides the settings, the add-on keeps:
 
@@ -258,9 +294,11 @@ Besides the settings, the add-on keeps:
 |---|---|---|
 | `/data/misc/vaidk/wpa_supplicant.conf` | The saved Wi-Fi network, with the password's WPA2 key hash | `wifi.sh try`, once it has joined the network |
 | `/data/misc/vaidk/admin` | Which user is the admin account, and whether the add-on created or adopted it | `ui.sh` |
+| `/data/misc/vaidk/ptz` | The pan, tilt and zoom position, home position and presets | `onvifd.py` |
 | `/etc/passwd`, `/etc/shadow`, `/etc/ssh/sshd_config` | The admin account itself, and its `AllowUsers` entry if `sshd` has that list. `/etc` is the vendor's overlay on `/data` | `useradd` and `chpasswd`, run by `ui.sh` |
 
-`ui.sh forget` deletes all of `/data/misc/vaidk`, and the admin account if the add-on created it.
+`ui.sh forget` deletes all of `/data/misc/vaidk`, and the admin account if the add-on created it,
+then restarts the ONVIF service so it forgets the presets it holds.
 **Reset camera** on the setup page, a new install and an uninstall all run it.
 
 ## Boot
@@ -283,10 +321,11 @@ flowchart TB
     qmmf --> cam["vaidk-camera<br/>waits for the audio calibration, then vaidk-camd"]
     rtsp --> cam
     cam --> streaming["Streaming"]
+    cam --> onvif["vaidk-onvif<br/>applies the kept view"]
     classDef mod fill:#dae8fc,stroke:#6c8ebf,color:#1a1a1a
     classDef os fill:#fff2cc,stroke:#d6b656,color:#1a1a1a
     classDef use fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
-    class init,join,done,rtsp,web,watch,cam mod
+    class init,join,done,rtsp,web,watch,cam,onvif mod
     class ap,rest,altek,svc,qmmf os
     class power,saved,streaming use
 ```
@@ -296,7 +335,7 @@ flowchart TB
   drop-in points `InitCamx.service` at the copy.
 - **The services start alongside it.** Two of them wait: the Wi-Fi watchdog waits for the boot
   script's Wi-Fi step, and the camera service waits for the vendor media server's audio calibration
-  ([start-up](device/camera/README.md#start-up)).
+  ([start-up](device/camera/README.md#start-up)). The ONVIF service starts after the camera service.
 - **At shutdown** the boot script does nothing. The vendor's ran its whole boot sequence again.
 
 Where the add-on lives:
@@ -304,9 +343,9 @@ Where the add-on lives:
 | Location | File system | What |
 |---|---|---|
 | `/opt/vaidk` | The root, read-only (`mmcblk0p14`) | The add-on. It is on the root because `/data` is mounted `noexec`, so `vaidk-camd` couldn't run from there |
-| `/lib/systemd/system` | The root | The four units, the boot script's drop-in in `InitCamx.service.d/`, and the time zone drop-in in `qmmf-server.service.d/` |
+| `/lib/systemd/system` | The root | The five units, the boot script's drop-in in `InitCamx.service.d/`, and the time zone drop-in in `qmmf-server.service.d/` |
 | `/home/<admin>` | The root | The admin account's home directory, when the add-on created the account |
-| `/data/misc/vaidk` | `/data`, read-write | Your settings, Wi-Fi network and admin account record |
+| `/data/misc/vaidk` | `/data`, read-write | Your settings, Wi-Fi network, admin account record, and the pan, tilt and zoom presets |
 | `/run/vaidk` | RAM | [Run-time files](#run-time-files) |
 
 Three things write to the root, each remounting it read-write only for as long as it takes: the
@@ -388,6 +427,7 @@ sequenceDiagram
 |---|---|---|
 | 8900/tcp | `rtspd.py`: the main stream, audio and the talk-back channel | Anyone on the network: no sign-in |
 | 8901/tcp | `rtspd.py`: the sub stream | Anyone on the network: no sign-in |
+| 8080/tcp | `onvifd.py`: ONVIF device, media and PTZ services | Anyone on the network: no sign-in. Its `/local/ptz` address answers only the camera itself |
 | 80/tcp | BusyBox `httpd`: the setup page | On the setup network, without sign-in. On your network, the admin account (HTTP Basic) |
 | 22/tcp | `sshd`, started on connection | Linux accounts, including the admin account |
 | 53, 67/udp | The vendor's `dnsmasq` | Devices on the setup network: addresses, and the captive portal's DNS. Another vendor instance serves an internal bridge, `bridge0` (192.168.225.1), with nothing attached |
@@ -410,7 +450,7 @@ install.ps1, install.sh      the installers, run on your PC (Windows; macOS or L
 .gitignore                   files that must never be committed: from a camera, private, or not ours to share
 camd/                        the camera program's source; camd/README.md
   camd.cpp                   the program: camera, tracks, on-screen text, media socket, main loop
-  image.cpp, image.h         picture settings
+  image.cpp, image.h         picture settings and the digital zoom's crop
   talkback.cpp, talkback.h   talk-back: the talk socket, decoding, the speaker, microphone muting
   common.h                   helpers the source files share
   build.ps1                  cross-compiles it on Windows into device/camera/vaidk-camd
@@ -423,6 +463,7 @@ device/                      everything copied to /opt/vaidk on the camera; devi
   boot/                      the boot script's builder and its systemd drop-in
   camera/                    camd.sh, mic.sh, vaidk-camd (built from camd/) and the unit
   rtsp/                      rtspd.py, net.sh and the unit
+  onvif/                     onvifd.py, onvif.sh and the unit
   wifi/                      wifi.sh and the unit
   web/                       ui.sh, www/ (the setup page's files) and the unit
   lights/                    the docker stand-in for altekflow

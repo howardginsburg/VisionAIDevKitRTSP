@@ -3,8 +3,8 @@
 `vaidk-camd` runs the camera through Qualcomm's camera service, `qmmf-server`, the same service the
 vendor's own software uses. It starts the camera, creates the video and microphone tracks, and sends
 every encoded frame to the add-on's [RTSP server](../device/rtsp/README.md). It also applies the
-picture settings, draws the on-screen text, and plays talk-back audio from the RTSP server on the
-speaker. It is about 1,500 lines of C++.
+picture settings and the digital pan, tilt and zoom, draws the on-screen text, and plays talk-back
+audio from the RTSP server on the speaker. It is about 1,600 lines of C++.
 
 On the camera it runs as `vaidk-camera.service`, started by `camd.sh` with the saved settings; that
 side is described in [device/camera/README.md](../device/camera/README.md).
@@ -12,7 +12,7 @@ side is described in [device/camera/README.md](../device/camera/README.md).
 | Path | What it is |
 |---|---|
 | [camd.cpp](camd.cpp) | The program: camera, tracks, on-screen text, the media socket and the main loop |
-| [image.cpp](image.cpp), [image.h](image.h) | Picture settings, through the camera's request settings (metadata) |
+| [image.cpp](image.cpp), [image.h](image.h) | Picture settings and the digital zoom's crop, through the camera's request settings (metadata) |
 | [talkback.cpp](talkback.cpp), [talkback.h](talkback.h) | Talk-back: the talk socket, G.711 decoding, the speaker through qmmf's player, microphone muting |
 | [common.h](common.h) | Shared helpers: clocks, logging, settings |
 | [build.ps1](build.ps1) | Builds it on Windows and writes `device/camera/vaidk-camd` |
@@ -30,15 +30,16 @@ side is described in [device/camera/README.md](../device/camera/README.md).
    starves the running track's encoder, so nothing starts until all tracks exist. If the microphone
    track can't be created, the program carries on without audio.
 4. **Starts** each session, then runs `CAMD_ON_START` in the background (the microphone gain).
-5. **Applies the picture settings** from `CAMD_LIVE` and **adds the on-screen text** to the running
-   video tracks (see below).
+5. **Applies the picture settings** from `CAMD_LIVE` and the view from `CAMD_PTZ`, and **adds the
+   on-screen text** to the running video tracks (see below).
 6. **Opens the talk-back socket** when `CAMD_TALK` is set, and announces it to the RTSP server.
 7. **For every buffer**, copies the frame into the output queue and returns the buffer to
    `qmmf-server` straight away: buffers held too long stall the camera pipeline.
 8. **Watches** the streams. If an active stream delivers nothing for 10 s, the program exits with
    status 1 and systemd starts it again. Every 10 minutes it logs frame and byte totals.
 9. **On `SIGHUP`**, re-reads `CAMD_LIVE` and applies the picture and speaker settings. **On
-   `SIGUSR1`**, plays a test chime on the speaker.
+   `SIGUSR1`**, plays a test chime on the speaker. **On `SIGUSR2`**, re-reads `CAMD_PTZ` and moves
+   the view.
 10. **On `SIGTERM` or `SIGINT`**, stops talk-back, removes the on-screen text, stops the sessions,
     deletes the tracks and sessions, stops the camera and disconnects. If that teardown hangs for
     20 s, the program exits anyway.
@@ -95,6 +96,33 @@ The `org.codeaurora` names are Qualcomm vendor tags. The recorder client registe
 it connects, so `image.cpp` finds them by walking the vendor sections. The C functions and the
 `CameraMetadata` class come from the camera's own `libcamera_metadata.so.0` and
 `libcamera_client.so.0`, declared in [android/camera/CameraMetadata.h](android/camera/CameraMetadata.h).
+
+## Digital pan, tilt and zoom
+
+The [ONVIF service](../device/onvif/README.md) writes the view to `CAMD_PTZ`
+(`/run/vaidk/ptz.conf`) and sends `SIGUSR2`. The program reads the file at start and on every
+`SIGUSR2`:
+
+| Key | Meaning | Missing |
+|---|---|---|
+| `ZOOM` | The zoom factor, 1 (the whole picture) and up | 1 |
+| `ZOOM_X`, `ZOOM_Y` | Where the crop sits, from 0 (left or top) to 100 (right or bottom) | 50 |
+
+A missing file means the whole picture. `image.cpp` turns the three values into a crop region on the
+sensor and sets it on the running camera, the same way as the picture settings:
+
+1. **Reads** `android.sensor.info.activeArraySize` (`0 0 3864 2180` on this camera) and
+   `android.scaler.availableMaxDigitalZoom` (8).
+2. **Clamps** the zoom to 1 to 8, and `ZOOM_X` and `ZOOM_Y` to 0 to 100.
+3. **Sizes** the crop: the active area divided by the zoom, rounded down to even numbers.
+4. **Places** it: `ZOOM_X` percent of the room left across, and `ZOOM_Y` percent down, again even.
+5. **Sets** `android.scaler.cropRegion` to that box with `SetCameraParam`.
+
+Both video streams are scaled from the crop, so they show the same view. The change takes effect
+within a frame or two, without restarting a stream or dropping a frame. The program logs the first
+view it applies after starting, and any error, for example
+`zoom: 2.00x at 75% across, 25% down (crop 1448 272 1932 1090)`; with `CAMD_DEBUG` it logs every
+change.
 
 ## On-screen text
 
@@ -155,7 +183,9 @@ meanwhile. If the program dies while they are muted, `mic.sh` sets the gain agai
 `camd.sh` writes `CAMD_LIVE` (`/run/vaidk/camd.conf`), one `KEY=value` per line: `ANTIFLICKER`,
 `EXPOSURE_EV`, `WHITE_BALANCE`, `SATURATION`, `SHARPNESS`, `SPEAKER_VOLUME` and
 `TALKBACK_MUTE_MIC`. The program reads it at start and on every `SIGHUP`; `camd.sh reload` rewrites
-it and sends the signal.
+it and sends the signal. The view has its own file and signal, `CAMD_PTZ` and `SIGUSR2`
+([digital pan, tilt and zoom](#digital-pan-tilt-and-zoom)), because the ONVIF service changes it ten
+times a second during a move.
 
 ## Options
 
@@ -175,6 +205,7 @@ match [defaults.conf](../device/defaults.conf).
 | `CAMD_SOCKET` | The media socket |
 | `CAMD_TALK` | The talk-back socket; unset (talk-back off) means no socket and no backchannel |
 | `CAMD_LIVE` | The live settings file (default `/run/vaidk/camd.conf`) |
+| `CAMD_PTZ` | The view file (default `/run/vaidk/ptz.conf`) |
 | `CAMD_ON_START` | A shell command run once the streams have started |
 | `CAMD_DEBUG` | `N`: log the first `N` buffers of each stream (size, flags, timestamps) and the totals every 5 s |
 | `CAMD_METADATA` | `1`: log the camera's vendor tags and every entry of its request settings at start (for exploring) |
@@ -203,7 +234,7 @@ connect the camera over USB and run:
    against: `libqmmf_recorder_client.so`, `libqmmf_player_client.so`, `libcamera_client.so.0` and
    `libcamera_metadata.so.0`. They are kept with the compiler in `%LOCALAPPDATA%\vaidk-build`, never in
    this repository.
-3. **Compile and strip.** Writes `device/camera/vaidk-camd`, about 57 KB.
+3. **Compile and strip.** Writes `device/camera/vaidk-camd`, about 64 KB.
 
 | Flag | Why |
 |---|---|
@@ -234,6 +265,8 @@ tested.
 | `qmmf-server` draws the overlay clock with `localtime()`, and the camera has no time zone database | `camd.sh` puts a POSIX `TZ` in `qmmf-server`'s environment |
 | CamX ignores the stream rotation parameter (`QMMF_VIDEO_ROTATE`) at 90 and 180 degrees, portrait sizes such as 1080x1920 make `qmmf-server` abort (`CheckValidStreamConfig`), and there are no flip or mirror tags | No rotation setting |
 | `org.codeaurora.qcamera3.contrast.level` is accepted but changes nothing | No contrast setting |
+| `android.scaler.croppingType` is 0 (centre only), yet off-centre crop regions work: frames from both streams match the requested part of the whole picture | Pans by moving the crop region |
+| Still captures (`CaptureImage`) reconfigure the camera: each one stalled the video for 140 to 550 ms, and four in a row left the camera driver stuck until a forced restart. A JPEG video track made `qmmf-server` abort (`CreateDeviceStream`), and zero-shutter-lag mode at 1080p wouldn't start the camera (`-61`) | No snapshot URL; Frigate and Home Assistant take stills from the stream |
 | The audio HAL's echo cancellation (`FX_IID_AEC`) can only be switched on through the effects API of the input stream, which `qmmf-server` owns; qmmf's audio track parameters don't reach it | Mutes the microphones while the speaker plays |
 | The microphones' noise suppression removes steady sounds, such as a test tone from the speaker | Echo and level tests use speech |
 | The player's `DequeueInputBuffer` waits for a free buffer in one-second steps and can miss the wakeup, so an early call blocks for a second | Counts free buffers from the `kInputBufferNotify` events and only asks for one it knows is free |

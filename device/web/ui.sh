@@ -4,7 +4,7 @@
 #   ui.sh write-httpd-conf     write the web server's login rule for the admin account
 #   ui.sh set-admin USER       create or update the admin account (reads the password from stdin)
 #   ui.sh adopt-admin USER     make an existing sudo account (e.g. from the original setup) the admin
-#   ui.sh forget               forget Wi-Fi, settings and the admin account
+#   ui.sh forget               forget Wi-Fi, settings, presets and the admin account
 #   ui.sh reset                forget everything, then restart into setup mode
 #   ui.sh info                 state, address and setup network name (used by the installers)
 . /opt/vaidk/common.sh
@@ -81,6 +81,8 @@ forget() {
     if [ -n "$user" ]; then remove_admin "$user" "$(cut -d' ' -f2 "$ADMIN_FILE")"; fi
     rm -rf "$DATA_DIR"
     rm -f "$RUN_DIR/scan" "$RUN_DIR/wifi-try" "$RUN_DIR/wifi-try-ssid"
+    # The ONVIF service keeps its presets in memory too; a restart drops them and shows the whole picture.
+    systemctl try-restart vaidk-onvif.service 2>/dev/null
     write_httpd_conf
 }
 
@@ -199,6 +201,11 @@ show_message() {
         picture) text="Saved. The picture changes in a moment." ;;
         talk) text="Saved." ;;
         chime) text="The camera's speaker plays a chime now." ;;
+        onvif) text="Saved." ;;
+        ptz-full) text="Showing the whole picture." ;;
+        ptz-goto) text="Moved to the preset." ;;
+        ptz-save) text="Saved the view as a preset. Frigate lists new presets after it restarts." ;;
+        ptz-delete) text="Deleted the preset." ;;
         device) text="Saved." ;;
         restart) text="Restarting the streams." ;;
         err-token) err="The page expired. Please try again." ;;
@@ -212,6 +219,9 @@ show_message() {
         err-name) err="Camera names use letters, digits and dashes (up to 32)." ;;
         err-camera) err="That camera setting isn't supported." ;;
         err-tz) err="Type the time zone in POSIX form, such as EST5EDT,M3.2.0,M11.1.0, or choose one from the list." ;;
+        err-ptz) err="Pan, tilt and zoom isn't answering. Check that it's on, or restart the camera." ;;
+        err-ptz-name) err="Preset names use letters, digits, spaces, dots, dashes and underscores (up to 32), starting with a letter or digit." ;;
+        err-ptz-full) err="The camera keeps up to 16 presets. Delete one first." ;;
         err-reset) err="Tick the box to confirm the reset." ;;
         *) return 0 ;;
     esac
@@ -356,6 +366,39 @@ post_talk() {
     redirect "$SELF?msg=talk"
 }
 
+# The ONVIF service (onvif/onvifd.py) keeps the view and presets; this page asks it over its local
+# address, which only answers this camera. Prints "zoom=", "pan=", "tilt=" and "preset=TOKEN NAME" lines.
+ptz_local() { # ptz_local [QUERY]
+    $BB wget -q -T 3 -O - "http://127.0.0.1:$ONVIF_PORT/local/ptz${1:+?$1}" 2>/dev/null
+}
+
+post_onvif() {
+    onvif=$(field onvif)
+    allowed "$onvif" "$ONVIF" "0 1" || fail err-camera
+    set_setting ONVIF "$onvif"
+    later "systemctl restart vaidk-onvif.service"
+    redirect "$SELF?msg=onvif"
+}
+
+post_ptz() {
+    action=$(field do)
+    case "$action" in
+        full) ptz_local do=full >/dev/null || fail err-ptz ;;
+        goto|delete)
+            t=$(field token)
+            printf '%s\n' "$t" | grep -qxE '[0-9]{1,3}' || fail err-ptz
+            ptz_local "do=$action&token=$t" >/dev/null || fail err-ptz ;;
+        save)
+            name=$(field name)
+            printf '%s\n' "$name" | grep -qxE '[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}' || fail err-ptz-name
+            if ! ptz_local "do=save&name=$(printf '%s' "$name" | tr ' ' '+')" >/dev/null; then
+                if ptz_local >/dev/null; then fail err-ptz-full; else fail err-ptz; fi
+            fi ;;
+        *) fail err-ptz ;;
+    esac
+    redirect "$SELF?msg=ptz-$action"
+}
+
 handle_post() {
     read_form
     [ "$(field t)" = "$(token)" ] || fail err-token
@@ -367,6 +410,8 @@ handle_post() {
         overlay) post_overlay ;;
         talk) post_talk ;;
         chime) sh "$VAIDK_DIR/camera/camd.sh" chime; redirect "$SELF?msg=chime" ;;
+        onvif) post_onvif ;;
+        ptz) post_ptz ;;
         device) post_device ;;
         restart-streams) restart_streams; redirect "$SELF?msg=restart" ;;
         reboot)
@@ -449,6 +494,7 @@ status_section() {
     if [ "$SUB_ENABLED" = 1 ]; then item_code "Sub stream" "rtsp://${ip:-camera-ip}:8901/live"; fi
     if [ "$AUDIO_ENABLED" = 1 ]; then item "Microphone" "On, +${AUDIO_GAIN_DB} dB gain (main stream)"; else item "Microphone" "Off"; fi
     if [ "$TALKBACK" = 1 ]; then item "Talk-back" "On, speaker volume ${SPEAKER_VOLUME}%"; else item "Talk-back" "Off"; fi
+    if [ "$ONVIF" = 1 ]; then item "Pan, tilt and zoom" "On, ONVIF port $ONVIF_PORT"; else item "Pan, tilt and zoom" "Off"; fi
     t=$(camera_temp)
     if [ -n "$t" ]; then printf '<dt>Camera temperature</dt><dd>%s &deg;C</dd>' "$t"; fi
     item "Battery" "$(battery)"
@@ -576,6 +622,40 @@ talk_section() {
     printf '<button class="secondary">Test speaker</button></form></section>'
 }
 
+ptz_section() {
+    printf '<section id="ptz"><h2>Pan, tilt and zoom</h2>'
+    form_start onvif
+    printf '<label>Pan, tilt and zoom <select name="onvif">'
+    options "$ONVIF" 1 "On" 0 "Off"
+    printf '</select></label>'
+    printf '<p class="hint">Digital: the camera shows part of its 4K picture, up to 4x, on both streams. Frigate and Home Assistant move it over ONVIF (port %s). It has no password: anyone who can reach the camera can move the view. Off shows the whole picture.</p>' "$ONVIF_PORT"
+    printf '<button>Save</button></form>'
+    if [ "$ONVIF" = 1 ]; then
+        state=$(ptz_local)
+        zoom=$(printf '%s\n' "$state" | sed -n 's/^zoom=//p')
+        if [ -z "$zoom" ]; then
+            printf '<p class="hint">The service isn'"'"'t answering yet.</p></section>'
+            return
+        fi
+        if [ "$zoom" = 1.00 ]; then now="the whole picture"; else now="${zoom}x zoom"; fi
+        printf '<h3>View</h3><div class="row"><span class="preset">Now: %s</span>' "$now"
+        form_start ptz; printf '<input type="hidden" name="do" value="full"><button class="secondary">Show the whole picture</button></form></div>'
+        printf '<h3>Presets</h3>'
+        presets=$(printf '%s\n' "$state" | sed -n 's/^preset=//p')
+        if [ -z "$presets" ]; then printf '<p class="hint">No presets yet.</p>'; fi
+        printf '%s\n' "$presets" | while read -r t name; do
+            [ -n "$t" ] || continue
+            printf '<div class="row"><span class="preset">%s</span>' "$(h "$name")"
+            form_start ptz; printf '<input type="hidden" name="do" value="goto"><input type="hidden" name="token" value="%s"><button class="secondary">Go</button></form>' "$(h "$t")"
+            form_start ptz; printf '<input type="hidden" name="do" value="delete"><input type="hidden" name="token" value="%s"><button class="secondary">Delete</button></form></div>' "$(h "$t")"
+        done
+        form_start ptz
+        printf '<input type="hidden" name="do" value="save"><label>Save the current view as <input name="name" maxlength="32" placeholder="Front door" required></label><button>Save preset</button></form>'
+        printf '<p class="hint">Move the view from Frigate or Home Assistant, then save it here: Frigate goes to presets but can'"'"'t save them, and lists new ones after it restarts.</p>'
+    fi
+    printf '</section>'
+}
+
 wifi_section() {
     printf '<section id="wifi"><h2>Wi-Fi</h2>'
     if [ "$MODE" = lan ]; then
@@ -599,8 +679,9 @@ device_section() {
 }
 
 frigate_section() {
-    printf '<section><h2>Frigate</h2><p class="hint">For your Frigate configuration. Frigate'"'"'s go2rtc keeps one connection to each stream for recording and detection%s.</p><pre>' \
-        "$([ "$TALKBACK" = 1 ] && echo '; the live view uses a separate two-way stream, so talking never interrupts a recording. Talking needs WebRTC and a page on HTTPS: Frigate on HTTPS, or Home Assistant on HTTPS with the Advanced Camera Card (see the add-on'"'"'s README)')"
+    printf '<section><h2>Frigate</h2><p class="hint">For your Frigate configuration. Frigate'"'"'s go2rtc keeps one connection to each stream for recording and detection%s.%s</p><pre>' \
+        "$([ "$TALKBACK" = 1 ] && echo '; the live view uses a separate two-way stream, so talking never interrupts a recording. Talking needs WebRTC and a page on HTTPS: Frigate on HTTPS, or Home Assistant on HTTPS with the Advanced Camera Card (see the add-on'"'"'s README)')" \
+        "$([ "$ONVIF" = 1 ] && echo ' The onvif part gives Frigate'"'"'s live view pan, tilt and zoom controls and the presets saved above.')"
     {
         url="rtsp://${ip:-camera-ip}"
         restream="rtsp://127.0.0.1:8554/$NAME"
@@ -632,6 +713,10 @@ frigate_section() {
         if [ "$TALKBACK" = 1 ]; then
             printf '    live:\n      streams:\n        Main: %s_twoway\n' "$NAME"
             if [ "$SUB_ENABLED" = 1 ]; then printf '        Sub: %s_sub\n' "$NAME"; fi
+        fi
+        if [ "$ONVIF" = 1 ]; then
+            # Frigate's ONVIF library can't send a request without a user, even an empty one.
+            printf '    onvif:\n      host: %s\n      port: %s\n      user: ""\n      password: ""\n' "${ip:-camera-ip}" "$ONVIF_PORT"
         fi
         # Frigate's dashboard only goes live on motion or objects, so keep motion on without detection.
         printf '    motion:\n      enabled: true\n'
@@ -671,6 +756,7 @@ settings_page() {
     picture_section
     overlay_section
     talk_section
+    ptz_section
     wifi_section
     device_section
     frigate_section

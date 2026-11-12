@@ -39,8 +39,9 @@ case "$1" in
         exit 0 ;;
 esac
 
-# A reload or chime that arrives before vaidk-camd runs must not stop the service.
-trap : HUP USR1
+# A reload, chime or zoom update that arrives before vaidk-camd runs must not stop the service. They are
+# ignored rather than trapped: an ignored signal stays ignored across exec until vaidk-camd handles it.
+trap '' HUP USR1 USR2
 
 # The vendor preview server would compete for the camera.
 if [ "$STOP_IPC_WEBSERVER" = 1 ] && systemctl -q is-active ipc-webserver.service; then
@@ -70,6 +71,8 @@ export AUDIO_ENABLED AUDIO_BITRATE KEYFRAME_SECONDS
 export NAME OVERLAY OVERLAY_POSITION OVERLAY_STREAMS
 export CAMD_SOCKET="$RUN_DIR/media.sock"
 export CAMD_LIVE="$LIVE_FILE"
+# Digital pan, tilt and zoom, written by the ONVIF service (vaidk-onvif); vaidk-camd re-reads it on SIGUSR2.
+export CAMD_PTZ="$RUN_DIR/ptz.conf"
 if [ "$TALKBACK" = 1 ]; then export CAMD_TALK="$RUN_DIR/talk.sock"; fi
 export CAMD_ON_START="/bin/sh $VAIDK_DIR/camera/mic.sh"
 exec "$VAIDK_DIR/camera/vaidk-camd"

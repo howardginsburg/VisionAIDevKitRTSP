@@ -102,6 +102,8 @@ worth adding. What was found, and what the add-on does with it:
 | Echo cancellation | The audio HAL has it (`FX_IID_AEC`, a `speaker-dmic-aec-ns` input), but it can only be switched on through the effects API of the input stream, which `qmmf-server` owns; qmmf's audio track parameters don't reach it | Not reachable; the microphones are muted while the speaker plays instead |
 | On-screen text | qmmf overlays: date and time, text, images, boxes and masks, drawn into the encoded video | **Used:** date, time and camera name |
 | Image controls | The camera's request settings: 147 entries and 198 vendor tags. Anti-flicker, exposure compensation, white balance, saturation and sharpness work on running streams; `contrast.level` is accepted but changes nothing | **Used:** the **Picture** settings, without contrast |
+| Digital zoom | A crop region on the sensor (`android.scaler.cropRegion`), up to 8x of the 3864x2180 active area, set on running streams; both streams follow, centred or not | **Used:** pan, tilt and zoom over ONVIF, up to 4x |
+| Still pictures | `CaptureImage` reconfigures the camera: each capture stalled the video for 140 to 550 ms, and four in a row left the camera driver stuck until a forced restart. A JPEG video track made `qmmf-server` abort, and zero-shutter-lag mode at 1080p wouldn't start | Not possible alongside the streams; Frigate and Home Assistant take stills from the stream |
 | Rotation and mirroring | qmmf has a rotation parameter, but CamX ignores it at 90 and 180 degrees, portrait sizes make `qmmf-server` abort, and there are no flip or mirror tags | Not possible on this firmware |
 | On-device analytics | Qualcomm's SNPE and video analytics libraries (`libSNPE.so`, `libVAManager.so`, `/usr/lib/vam_engines`), and a MobileNet-SSD model in the vendor's Docker image | Unused: Frigate does detection |
 | HDMI | The LT9611 bridge and `weston` | Unused |
@@ -135,8 +137,9 @@ Trade-offs:
 - **USB means root.** Anyone with the camera and a USB cable has a root shell, as on the stock camera.
 - **Open streams and plain HTTP.** RTSP has no password, and the setup page's sign-in isn't encrypted.
   The talk-back channel has no password either, so anything on the network can play sound on the
-  speaker while it is on. With the kernel from 2020 and OpenSSL and OpenSSH from 2018, keep the
-  camera on a trusted network or VLAN, never exposed to the internet.
+  speaker while it is on, and neither has the ONVIF service, so anything on the network can move the
+  view. With the kernel from 2020 and OpenSSL and OpenSSH from 2018, keep the camera on a trusted
+  network or VLAN, never exposed to the internet.
 - **Writes to the read-only root.** The installer, the setup page when it creates or deletes the
   admin account's home directory, and `camd.sh tz` when the time zone changes, remount the root file
   system read-write for a moment. A power cut at that moment could damage it, and a damaged root

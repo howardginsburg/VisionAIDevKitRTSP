@@ -42,18 +42,19 @@ camera's new address, then the camera restarts.
 
 | Section | What it shows or changes |
 |---|---|
-| Status | Wi-Fi network and signal, address, stream health, the stream URLs, microphone, talk-back, camera temperature, battery, how long the camera has been running |
+| Status | Wi-Fi network and signal, address, stream health, the stream URLs, microphone, talk-back, pan, tilt and zoom, camera temperature, battery, how long the camera has been running |
 | Camera streams | Main: resolution, frame rate, bitrate, codec. Sub: on or off, resolution, frame rate, bitrate. Microphone: on or off, gain. Saving restarts the camera service |
 | Picture | Light flicker, exposure, white balance, colour and sharpness. Saving applies them at once (`camd.sh reload`) |
 | On-screen text | Date and time, camera name or both; the corner; main stream or both; the time zone (a list, or a POSIX string). Saving updates `qmmf-server`'s time zone if it changed (`camd.sh tz`) and restarts the camera service |
 | Talk-back | On or off, speaker volume, muting the microphones while the speaker plays. Volume and muting apply at once; turning talk-back on or off restarts the camera service. **Test speaker** plays a chime (`camd.sh chime`) |
+| Pan, tilt and zoom | The [ONVIF service](../onvif/README.md) on or off (saving restarts it), the current zoom, **Show the whole picture**, and the presets: go to, delete, or save the current view under a name. It asks the service over its local address ([the setup page](../onvif/README.md#the-setup-page)) |
 | Wi-Fi | Join another network |
 | Camera name and admin account | The name (page title, Frigate name, on-screen name, DHCP host name), the admin user and password |
-| Frigate | Frigate configuration built from the current settings: go2rtc streams (with a separate two-way stream when talk-back is on) and the camera entry |
+| Frigate | Frigate configuration built from the current settings: go2rtc streams (with a separate two-way stream when talk-back is on) and the camera entry, with its `onvif` part when pan, tilt and zoom is on |
 | Maintenance | Restart the streams; restart the camera (on the setup network: leave setup mode); reset the camera |
 
-**Reset camera** forgets the Wi-Fi network, the settings and the admin account, then restarts in setup
-mode.
+**Reset camera** forgets the Wi-Fi network, the settings, the pan, tilt and zoom presets and the admin
+account, then restarts in setup mode.
 
 ## The admin account
 
@@ -78,6 +79,9 @@ The admin account is a Linux user: it signs in to this page and over SSH, and ca
   have length and character limits; control characters are refused.
 - Settings are read back by the shell (`load_settings`), so a typed time zone may only use letters,
   digits and `+ : , . / -`, which need no quoting.
+- Preset names may only use letters, digits, spaces, `.`, `_` and `-` (up to 32, starting with a
+  letter or digit), and preset tokens only digits, before they go into a request to the ONVIF
+  service.
 - Output is HTML-escaped by `ui.sh` itself: BusyBox's own escaping breaks UTF-8 network names.
 - Passwords go to `chpasswd` on its standard input, never on a command line. The Wi-Fi password is
   stored only as its WPA2 key hash.
@@ -104,7 +108,7 @@ Run on the camera as root (`adb shell`, or SSH with `sudo`):
 sh /opt/vaidk/web/ui.sh info               # state, address, setup network, streaming, microphone, admin
 sh /opt/vaidk/web/ui.sh set-admin <user>   # create or update the admin account; reads the password
 sh /opt/vaidk/web/ui.sh adopt-admin <user> # make an existing sudo account the admin
-sh /opt/vaidk/web/ui.sh forget             # forget Wi-Fi, settings and the admin account
+sh /opt/vaidk/web/ui.sh forget             # forget Wi-Fi, settings, presets and the admin account
 sh /opt/vaidk/web/ui.sh reset              # forget everything, then restart into setup mode
 ```
 

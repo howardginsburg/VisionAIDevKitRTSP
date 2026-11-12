@@ -6,6 +6,7 @@ header h1 { margin: .5rem 0 0; font-size: 1.6rem; }
 header p { margin: .25rem 0 1rem; color: var(--muted); }
 h1 { font-size: 1.5rem; }
 h2 { font-size: 1.15rem; margin: 0 0 .75rem; }
+h3 { font-size: 1rem; margin: 1.25rem 0 .5rem; }
 section { border: 1px solid var(--line); border-radius: .6rem; padding: 1rem; margin: 0 0 1rem; }
 fieldset { border: 0; padding: 0; margin: 0 0 1rem; }
 legend { font-weight: 600; margin-bottom: .5rem; }
@@ -18,6 +19,7 @@ button.secondary { background: transparent; color: var(--accent); border: 1px so
 button.danger { background: var(--danger); }
 .row { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
 .row form { margin: 0; }
+.row .preset { flex: 1; align-self: center; overflow-wrap: anywhere; }
 form.danger { border-top: 1px solid var(--line); padding-top: 1rem; }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: .35rem 1rem; margin: 0; }
 dt { color: var(--muted); }

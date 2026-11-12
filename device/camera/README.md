@@ -2,9 +2,9 @@
 
 `vaidk-camera.service` runs the camera program, `vaidk-camd`, with the saved settings. The program
 drives the camera sensor, the video encoders, the microphone and the speaker through Qualcomm's
-camera service (`qmmf-server`), applies the picture settings and on-screen text, and hands the
-encoded streams to the [RTSP server](../rtsp/README.md). How the program itself works, and how to
-build it, is in [camd/README.md](../../camd/README.md).
+camera service (`qmmf-server`), applies the picture settings, the digital pan, tilt and zoom, and the
+on-screen text, and hands the encoded streams to the [RTSP server](../rtsp/README.md). How the
+program itself works, and how to build it, is in [camd/README.md](../../camd/README.md).
 
 | File | What it is |
 |---|---|
@@ -24,7 +24,8 @@ build it, is in [camd/README.md](../../camd/README.md).
    server stays otherwise idle: nothing else uses it.
 3. Writes the live settings file, `/run/vaidk/camd.conf`, and runs `vaidk-camd` with the other
    settings as environment variables. It creates every track (main video with the microphone, then
-   the sub video), starts them, applies the picture settings, adds the on-screen text and, with
+   the sub video), starts them, applies the picture settings and the view kept by the
+   [ONVIF service](../onvif/README.md) (`/run/vaidk/ptz.conf`), adds the on-screen text and, with
    talk-back on, opens the talk-back socket.
 4. Once the streams are running, `vaidk-camd` runs `mic.sh`, which applies the microphone gain.
 
@@ -40,8 +41,13 @@ session. Players stay connected to the RTSP server meanwhile and pick up again a
 | `camd.sh chime` | Sends `vaidk-camd` `SIGUSR1`, which plays a short chime on the speaker | **Test speaker** |
 | `camd.sh tz` | Puts `TIME_ZONE` into `qmmf-server`'s environment and restarts `qmmf-server` if it changed ([Time zone](#time-zone)) | **On-screen text**, and the installer |
 
-Until `vaidk-camd` runs, `camd.sh` ignores those two signals, so a reload or chime during start-up
-doesn't stop the service.
+The [ONVIF service](../onvif/README.md) moves the view itself: it writes `/run/vaidk/ptz.conf` and
+sends `vaidk-camd` `SIGUSR2`.
+
+`camd.sh` ignores `SIGHUP`, `SIGUSR1` and `SIGUSR2` until `vaidk-camd` takes them over, so a reload,
+chime or move during start-up doesn't stop the service. It ignores them rather than trapping them
+because an ignored signal stays ignored across `exec`, while a trapped one would go back to its
+default, which ends the program, until `vaidk-camd` sets its handlers.
 
 ## Settings it uses
 
@@ -135,6 +141,8 @@ cat /run/vaidk/rtsp.status                        # what the RTSP server receive
 |---|---|
 | `streaming: main=H264 1920x1080 30 4000000;sub=...;audio=AAC 48000 1 64000;clock=-854;talk=/run/vaidk/talk.sock;` | Running, with these streams; `talk` when talk-back is on. `clock` is explained in [camd/README.md](../../camd/README.md#output-the-media-socket) |
 | `image: aeAntibandingMode=3, aeExposureCompensation=0, awbMode=1, use_saturation=5, strength=2` | The picture settings the camera kept, at start and after each reload |
+| `zoom: 2.00x at 75% across, 25% down (crop 1448 272 1932 1090)` | The view it applied first after starting, and the crop on the sensor ([digital pan, tilt and zoom](../../camd/README.md#digital-pan-tilt-and-zoom)) |
+| `zoom: <error>` | The camera refused a view; the streams carry on with the previous one |
 | `connected to the RTSP server` | Sending to the RTSP server |
 | `talk-back: speaker on (volume 80, microphones muted)` | Talk-back audio arrived and is playing |
 | `talk-back: speaker off after 4.2 s` | A second without talk-back audio; the speaker track closed |

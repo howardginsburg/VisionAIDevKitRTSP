@@ -197,3 +197,34 @@ std::string ImageControl::apply(Recorder &recorder, uint32_t camera_id,
   }
   return summary.empty() ? "camera defaults" : summary;
 }
+
+std::string ImageControl::crop(Recorder &recorder, uint32_t camera_id, double zoom, double x, double y,
+                               std::string *region) {
+  android::CameraMetadata meta;
+  status_t ret = recorder.GetCameraParam(camera_id, meta);
+  if (ret != 0) return "GetCameraParam failed (" + std::to_string(ret) + ")";
+  uint32_t area_tag = tag("android.sensor.info.activeArraySize"), crop_tag = tag("android.scaler.cropRegion");
+  camera_metadata_ro_entry_t area = area_tag ? meta.find(area_tag) : camera_metadata_ro_entry_t();
+  if (!crop_tag || area.count != 4 || area.type != TYPE_INT32 || area.data.i32[2] <= 0 || area.data.i32[3] <= 0)
+    return "no crop region";
+  double max_zoom = 8;
+  uint32_t t = tag("android.scaler.availableMaxDigitalZoom");
+  camera_metadata_ro_entry_t e = t ? meta.find(t) : camera_metadata_ro_entry_t();
+  if (e.count == 1 && e.type == TYPE_FLOAT && e.data.f[0] >= 1) max_zoom = e.data.f[0];
+  zoom = zoom > 1 ? (zoom < max_zoom ? zoom : max_zoom) : 1;
+  x = x > 0 ? (x < 100 ? x : 100) : 0;
+  y = y > 0 ? (y < 100 ? y : 100) : 0;
+  int32_t aw = area.data.i32[2], ah = area.data.i32[3];
+  int32_t w = int32_t(aw / zoom) & ~1, h = int32_t(ah / zoom) & ~1;
+  int32_t box[4] = {area.data.i32[0] + (int32_t((aw - w) * x / 100) & ~1),
+                    area.data.i32[1] + (int32_t((ah - h) * y / 100) & ~1), w, h};
+  if (meta.update(crop_tag, box, 4) != 0) return "crop region not accepted";
+  ret = recorder.SetCameraParam(camera_id, meta);
+  if (ret != 0) return "SetCameraParam failed (" + std::to_string(ret) + ")";
+  if (region) {
+    char text[64];
+    snprintf(text, sizeof(text), "%d %d %d %d", box[0], box[1], box[2], box[3]);
+    *region = text;
+  }
+  return "";
+}

@@ -12,7 +12,7 @@ DATA_DIR=/data/misc/vaidk
 UNIT_DIR=/lib/systemd/system
 VENDOR_BOOT=/vendor/etc/camera/InitCamx
 # Each component's systemd unit, relative to /opt/vaidk.
-UNITS="camera/vaidk-camera.service rtsp/vaidk-rtsp.service wifi/vaidk-wifi.service web/vaidk-web.service"
+UNITS="camera/vaidk-camera.service rtsp/vaidk-rtsp.service wifi/vaidk-wifi.service web/vaidk-web.service onvif/vaidk-onvif.service"
 
 log() { printf '%s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*"; exit 1; }
@@ -55,6 +55,7 @@ install_addon() {
     bash -n "$new/boot/InitCamx.vaidk"
     for script in "$new"/*.sh "$new"/*/*.sh "$new"/web/www/cgi-bin/*.cgi "$new/lights/docker"; do sh -n "$script"; done
     python3 -c "compile(open('$new/rtsp/rtspd.py').read(), 'rtspd.py', 'exec')"
+    python3 -c "compile(open('$new/onvif/onvifd.py').read(), 'onvifd.py', 'exec')"
     [ "$(dd if="$new/camera/vaidk-camd" bs=1 skip=1 count=3 2>/dev/null)" = ELF ] \
         || die "camera/vaidk-camd is damaged (was it copied as text?)"
     rm -rf "$VAIDK_DIR"
