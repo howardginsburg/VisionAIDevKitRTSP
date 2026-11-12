@@ -27,7 +27,8 @@ account, IoT Hub or SSH is needed: you install it over USB and finish setup from
 ## What you need
 
 - A Vision AI DevKit on firmware **v0.5370_Perf** (the installer checks this).
-- A USB-C cable and the camera's power supply. Keep the camera plugged in.
+- A USB-C cable to install the add-on from your computer, and the camera's power supply (or another
+  USB wall charger) to run it.
 - [Android SDK Platform-Tools](https://developer.android.com/tools/releases/platform-tools) (`adb`)
   on your computer. Connect the camera and check that `adb devices` lists it.
 - A phone or computer with Wi-Fi to finish setup.
@@ -55,6 +56,12 @@ the end. The bypass applies to that run only.
 
 The installer copies the add-on to the camera, installs it and restarts the camera. After about two
 minutes the camera opens its setup Wi-Fi network and the installer prints its name.
+
+> [!WARNING]
+> Once the installer has finished, move the camera from your computer to its power supply. A
+> computer's USB port gives it 500 mA, less than it uses while streaming: the battery runs down even
+> though the setup page shows it as charging, and once it is flat the camera stops and has to be
+> started again with its power button ([Troubleshooting](#troubleshooting)).
 
 ## Set up the camera
 
@@ -306,6 +313,7 @@ hand ([how](device/README.md#settings)).
 | Amber | Not connected to Wi-Fi |
 | Blinking green | On Wi-Fi; streams are starting or recovering |
 | Solid green | On Wi-Fi and streaming |
+| Off | Switched off. If it should be on, its battery may have run flat ([Troubleshooting](#troubleshooting)) |
 
 ## Change Wi-Fi networks or reset
 
@@ -343,6 +351,12 @@ also removes everything.
   `adb shell cat /run/vaidk/rtsp.status`.
 - **Logs:** `adb shell journalctl -u vaidk-camera -u vaidk-rtsp -u vaidk-onvif -u vaidk-wifi -u vaidk-web --no-pager -n 50`
 - **Boot log:** `adb shell cat /data/misc/wifi/docker_boot`
+- **The camera stopped and its lights are off:** its battery may have run flat, for example on a
+  computer's USB port. Plug it into its power supply and hold the power button until the lights turn
+  red. If they're still off after 15 seconds, let go: holding it that long switches the camera fully
+  off. Wait 5 seconds, then hold the button again until the lights turn red. If nothing lights up,
+  let it charge for half an hour and try again. As a last resort, press the reset button in the
+  pinhole on the right side with a paperclip.
 - **No picture:** test the main stream with VLC (**Media > Open Network Stream**) and check that the
   lights are solid green.
 - **No sound:** check that the setup page shows the microphone as on, then raise the gain. The

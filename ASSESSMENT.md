@@ -110,7 +110,7 @@ worth adding. What was found, and what the add-on does with it:
 | USB camera | The USB gadget defines UVC (webcam) and UAC2 (USB audio) functions, not enabled | Unused |
 | microSD | A slot, no card | Unused |
 | Bluetooth | Bluetooth LE, reachable only through the vendor's `btapp` | Unused |
-| Battery | 1,372 mAh. On a computer's USB port it ran down while streaming (13 % to 9 % over a few hours) even though it reported Charging | Shown on the setup page. Use the camera's power supply |
+| Battery | 1,372 mAh. On a computer's USB port it ran down while streaming even though it reported Charging (13 % to 9 % over a few hours). Left there, it ran flat: below about 2.7 V the internal storage stopped responding, the camera service and then the kernel crashed, and it took the power button to start the camera again. On a 1.5 A USB charger it charges while streaming | Shown on the setup page. Use the camera's power supply |
 
 ## Conclusion: what can it be?
 
