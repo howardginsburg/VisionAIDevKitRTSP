@@ -89,7 +89,7 @@ The vendor software the add-on relies on, and what it does now:
 | `wpa_supplicant`, `udhcpc` | The Wi-Fi client |
 | BusyBox `httpd` | Serves the setup page |
 | `tinymix` | Sets the microphone gain (`mic.sh`). `vaidk-camd` mutes and restores the same controls itself, through the sound card's control device |
-| `sshd`, `adbd` | SSH (optional) and ADB (the installers) |
+| `sshd`, `adbd` | SSH, which `ui.sh` turns on whenever it saves the admin account, and ADB (the installers) |
 
 ## How data flows
 
@@ -298,6 +298,7 @@ Besides the settings, the add-on keeps:
 | `/data/misc/vaidk/admin` | Which user is the admin account, and whether the add-on created or adopted it | `ui.sh` |
 | `/data/misc/vaidk/ptz` | The pan, tilt and zoom position, home position and presets | `onvifd.py` |
 | `/etc/passwd`, `/etc/shadow`, `/etc/ssh/sshd_config` | The admin account itself, and its `AllowUsers` entry if `sshd` has that list. `/etc` is the vendor's overlay on `/data` | `useradd` and `chpasswd`, run by `ui.sh` |
+| `/etc/systemd/system/sockets.target.wants/sshd.socket` | SSH at boot. The image has this link already; it is written again only if SSH had been turned off, for example by the vendor setup | `systemctl enable`, run by `ui.sh` |
 
 `ui.sh forget` deletes all of `/data/misc/vaidk`, and the admin account if the add-on created it,
 then restarts the ONVIF service so it forgets the presets it holds.

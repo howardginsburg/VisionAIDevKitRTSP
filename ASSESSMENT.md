@@ -38,7 +38,7 @@ Everything else was read from the camera itself.
 | Camera stack | Qualcomm's `qmmf-server`: the camera, the image processor, the H.264/H.265 encoders and the microphones, through the CamX camera HAL and the audio HAL. Two vendor front ends: `qmmf-webserver` (RTSP and an HTTP API on port 4000) and `ipc-webserver` (a preview page on port 1080, user `admin`, password `admin`) |
 | Azure | IoT Edge 1.0.8.3 (installed, not running) and Docker 3.0.5 (running). The vendor's boot script loads Microsoft's vision sample and IoT Edge containers into Docker |
 | Vendor services | `altekflow` (lights, power button, battery protection), `wifimonitor` (Wi-Fi state for the lights), `websettings` (the setup site), `startvirtualsoftap`, `hostapd` and `dnsmasq` (the setup network) |
-| Access | ADB over USB: a root shell, with no authorization (`ro.adb.secure` unset). SSH on port 22, socket-activated, for accounts the vendor setup created |
+| Access | ADB over USB: a root shell, with no authorization (`ro.adb.secure` unset). SSH on port 22, socket-activated and on in the image, for accounts the vendor setup created; that setup could also turn SSH off |
 | Disk usage | `/` 2.0 GB used of 3.0 GB (934 MB free); `/data` 1.4 GB used of 4.6 GB |
 
 ### Storage layout
@@ -58,8 +58,10 @@ Everything else was read from the camera itself.
 
 1. **Setup network.** Out of the box, the camera opened a Wi-Fi network named `MSIoT_` and six
    hexadecimal characters, with the password on the sticker underneath.
-2. **Setup site.** `websettings` on `http://192.168.143.1/` asked for a Wi-Fi network and an SSH
-   account, then for an Azure IoT Hub.
+2. **Setup site.** `websettings` on `http://192.168.143.1/` first asked for an optional new password
+   for the setup network, whether to turn SSH on (an **SSH enabled** box, with an optional login and
+   password), and whether to turn on developer mode, under which anyone on the network could watch
+   the unencrypted stream. Then it asked for a Wi-Fi network, then for an Azure IoT Hub.
 3. **Azure.** IoT Edge then deployed Microsoft's vision samples as containers, and the camera
    reported to IoT Hub. The "IoT Hub connected" light (solid green) meant IoT Edge's agent container
    was running.

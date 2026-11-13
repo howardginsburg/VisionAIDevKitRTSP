@@ -27,10 +27,21 @@ valid_password() { [ ${#1} -ge 8 ] && [ ${#1} -le 64 ] && ! has_ctrl "$1"; }
 in_allow_users() {
     awk -v u="$1" '/^[[:space:]]*AllowUsers/ { for (i = 2; i <= NF; i++) if ($i == u) f = 1 } END { exit !f }' "$SSHD_CONFIG"
 }
-allow_ssh() { # sshd only admits listed users once an AllowUsers line exists
-    grep -qE '^[[:space:]]*AllowUsers' "$SSHD_CONFIG" || return 0
-    in_allow_users "$1" && return 0
-    sed -i "s/^\([[:space:]]*AllowUsers.*\)\$/\1 $1/" "$SSHD_CONFIG"
+allow_ssh() { # allow_ssh USER: USER may sign in over SSH, and SSH is on
+    # sshd only admits listed users once an AllowUsers line exists
+    if grep -qE '^[[:space:]]*AllowUsers' "$SSHD_CONFIG" && ! in_allow_users "$1"; then
+        sed -i "s/^\([[:space:]]*AllowUsers.*\)\$/\1 $1/" "$SSHD_CONFIG"
+    fi
+    # What the vendor setup's "SSH enabled" box did (that setup may have left SSH off): on now and at
+    # every boot.
+    case $(systemctl is-enabled sshd.socket 2>/dev/null) in
+        enabled) ;;
+        masked*) systemctl unmask sshd.socket; systemctl enable sshd.socket ;;
+        *) systemctl enable sshd.socket ;;
+    esac >/dev/null 2>&1
+    systemctl start sshd.socket >/dev/null 2>&1
+    systemctl -q is-active sshd.socket || echo "SSH couldn't be turned on: sshd.socket isn't running" >&2
+    return 0
 }
 disallow_ssh() {
     mkdir -p "$RUN_DIR"
@@ -833,6 +844,7 @@ case "$MODE" in
         echo "admin account: $2" ;;
     adopt-admin)
         id -nG "$2" 2>/dev/null | tr ' ' '\n' | grep -qx sudo || { echo "$2 is not an existing sudo account" >&2; exit 1; }
+        allow_ssh "$2"
         old=$(admin_user); old_kind=$(cut -d' ' -f2 "$ADMIN_FILE" 2>/dev/null)
         if [ -n "$old" ] && [ "$old" != "$2" ]; then remove_admin "$old" "$old_kind"; fi
         mkdir -p "$DATA_DIR" && chmod 700 "$DATA_DIR"

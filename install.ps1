@@ -142,7 +142,7 @@ if ($info['state'] -eq 'setup') {
     Write-Host "  1. Join the Wi-Fi network '$ssid'. Its password is on the sticker under the camera"
     Write-Host '     (or run: adb shell cat /persist/data/wifi.bin).'
     Write-Host '  2. A sign-in page should open. If it does not, browse to http://192.168.143.1/'
-    Write-Host '  3. Choose your Wi-Fi network, create the admin account, and select Save and connect.'
+    Write-Host '  3. Choose your Wi-Fi network, create the admin account (it''s also your SSH login), and select Save and connect.'
     return
 }
 

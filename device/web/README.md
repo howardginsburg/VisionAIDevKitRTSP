@@ -30,7 +30,8 @@ the installers' status check.
 
 **First-time setup** (setup network, no saved Wi-Fi network):
 1. **Your Wi-Fi.** A list of nearby networks, or a name typed in, and the password.
-2. **Admin account.** Signs in to this page from your network, and over SSH.
+2. **Admin account.** Signs in to this page from your network, and over SSH, which saving it turns
+   on.
 3. **Camera.** The name, the stream profile (1080p main + 640x360 sub, or 4K main + 720p sub) and
    whether to include the microphone.
 
@@ -66,6 +67,10 @@ The admin account is a Linux user: it signs in to this page and over SSH, and ca
   (an `AllowUsers` line), it is added there.
 - **Existing user.** An existing member of `sudo`, such as an account from the vendor setup, is
   adopted rather than created.
+- **SSH.** Creating, changing or adopting the account also turns SSH on, now and at every boot
+  (`systemctl enable` and `start` for `sshd.socket`), as the vendor setup did when its
+  **SSH enabled** box was ticked; unticked, that setup turned SSH off. If SSH still isn't running
+  afterwards, `ui.sh` says so on standard error and carries on. The add-on never turns SSH off.
 - **Changing the account.** Choosing another user deletes an account the add-on created, but never
   an adopted one.
 - **Record.** The account is recorded in `/data/misc/vaidk/admin` as `<user> created` or

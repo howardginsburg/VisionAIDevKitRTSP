@@ -22,7 +22,8 @@ account, IoT Hub or SSH is needed: you install it over USB and finish setup from
   stay connected; if the camera crashes, it restarts; and if it can't reach its Wi-Fi network for 5
   minutes, it opens its setup network so you can pick another one.
 - **Status lights:** solid green means the camera is on Wi-Fi and streaming.
-- **SSH (optional):** the admin account also signs in over SSH.
+- **SSH:** the admin account is also your SSH login. Creating it turns SSH on, as ticking
+  **SSH enabled** did in the original setup.
 
 ## What you need
 
@@ -69,9 +70,9 @@ minutes the camera opens its setup Wi-Fi network and the installer prints its na
    exact name). The password is on the sticker under the camera; you can also read it with
    `adb shell cat /persist/data/wifi.bin`.
 2. A sign-in page opens automatically. If it doesn't, browse to `http://192.168.143.1/`.
-3. Choose your Wi-Fi network and enter its password, create the admin account, name the camera,
-   pick a stream profile and choose whether to include microphone audio, then select
-   **Save and connect**.
+3. Choose your Wi-Fi network and enter its password, create the admin account (it's also your SSH
+   login), name the camera, pick a stream profile and choose whether to include microphone audio,
+   then select **Save and connect**.
 4. The page shows the camera's new address. The camera restarts, and its lights turn solid green
    once it is streaming (about two minutes). Switch back to your usual Wi-Fi and open
    `http://<camera-ip>/`, signing in with the admin account.
@@ -331,7 +332,9 @@ crash, can be changed by hand ([how](device/README.md#settings)).
 
 ## SSH
 
-SSH is optional. The admin account signs in as `ssh <user>@<camera-ip>` and can use `sudo`.
+The admin account is also your SSH login, in place of the original setup's SSH account. It signs in
+as `ssh <user>@<camera-ip>` and can use `sudo`. Creating or changing the admin account turns SSH on,
+even if the original setup had left it off; the add-on never turns SSH off.
 
 ## Reinstall or uninstall
 

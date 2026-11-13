@@ -96,7 +96,7 @@ if [ "$(value state "$state")" = setup ]; then
     echo "  1. Join the Wi-Fi network '$ssid'. Its password is on the sticker under the camera"
     echo "     (or run: adb shell cat /persist/data/wifi.bin)."
     echo "  2. A sign-in page should open. If it does not, browse to http://192.168.143.1/"
-    echo "  3. Choose your Wi-Fi network, create the admin account, and select Save and connect."
+    echo "  3. Choose your Wi-Fi network, create the admin account (it's also your SSH login), and select Save and connect."
     exit 0
 fi
 

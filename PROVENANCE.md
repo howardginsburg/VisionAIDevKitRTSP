@@ -446,7 +446,7 @@ flat.
 - On your network: the settings, behind HTTP Basic sign-in, which BusyBox checks against the admin
   account's Linux password.
 - The admin account is an ordinary Linux user in the `sudo` group, so the same account signs in over
-  SSH.
+  SSH, and saving it turns SSH on ([SSH at setup](#ssh-at-setup)).
 
 Details: [device/web/README.md](device/web/README.md).
 
@@ -460,6 +460,28 @@ Details: [device/web/README.md](device/web/README.md).
 | A password on a command line is visible to every process | `chpasswd` reads it on its standard input |
 | Phones open a sign-in page only if their connectivity checks are answered | Answers for the checks of Apple, Android and Windows |
 | Another web site could submit the forms | A token in every form, new at each boot |
+
+### SSH at setup
+
+**In the way.** The vendor setup's first page had an **SSH enabled** box above an optional SSH login
+and password (pictured in
+[Microsoft's Quick Start](https://azure.github.io/Vision-AI-DevKit-Pages/docs/quick_start/)).
+Unticked, it turned SSH off: the page, `/data/misc/websettings/homepage/index.html` on the camera,
+calls `/set_sshd?enable=false`, and `websettings` holds the commands `systemctl disable sshd.socket`
+and `systemctl stop sshd.socket`. So an admin account alone didn't guarantee SSH.
+
+**What the add-on does.** Creating, changing or adopting the admin account runs what the ticked box
+ran: `systemctl enable` and `start` for `sshd.socket`, after `unmask` if it is masked. The setup page
+needs no box of its own, because the add-on never turns SSH off.
+
+Tested on the camera, with the streams running:
+
+| Test | Result |
+|---|---|
+| SSH turned off the vendor's way (`systemctl disable` and `stop` for `sshd.socket`) | Nothing listening on port 22 |
+| A new admin account, `vaidktest`, created as setup does it (`ui.sh set-admin`) | SSH on and enabled again, listening on port 22. The account was added to `AllowUsers`, with a home directory, the groups `sudo`, `inet` and `sdcard`, and a SHA-512 password |
+| Signing in as `vaidktest` from a PC | SSH with its password, then `sudo` to root. The setup page accepted it and refused the previous admin account |
+| Adopting the vendor setup's account again (`ui.sh adopt-admin`) | `vaidktest` deleted, with its home directory and `AllowUsers` entry, and its SSH and page sign-ins refused. The adopted account signed in to both |
 
 ## Installing over USB
 
