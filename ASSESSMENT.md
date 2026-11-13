@@ -38,7 +38,7 @@ Everything else was read from the camera itself.
 | Camera stack | Qualcomm's `qmmf-server`: the camera, the image processor, the H.264/H.265 encoders and the microphones, through the CamX camera HAL and the audio HAL. Two vendor front ends: `qmmf-webserver` (RTSP and an HTTP API on port 4000) and `ipc-webserver` (a preview page on port 1080, user `admin`, password `admin`) |
 | Azure | IoT Edge 1.0.8.3 (installed, not running) and Docker 3.0.5 (running). The vendor's boot script loads Microsoft's vision sample and IoT Edge containers into Docker |
 | Vendor services | `altekflow` (lights, power button, battery protection), `wifimonitor` (Wi-Fi state for the lights), `websettings` (the setup site), `startvirtualsoftap`, `hostapd` and `dnsmasq` (the setup network) |
-| Access | ADB over USB: a root shell, with no authorization (`ro.adb.secure` unset). SSH on port 22, socket-activated and on in the image, for accounts the vendor setup created; that setup could also turn SSH off |
+| Access | ADB over USB: a root shell, with no authorization (`ro.adb.secure` unset). SSH on port 22, socket-activated and on in the image, for accounts the vendor setup created; that setup could also turn SSH off. The firmware has no SSH host keys: the camera makes its own the first time SSH is used |
 | Disk usage | `/` 2.0 GB used of 3.0 GB (934 MB free); `/data` 1.4 GB used of 4.6 GB |
 
 ### Storage layout
@@ -48,7 +48,7 @@ Everything else was read from the camera itself.
 | `/` | `mmcblk0p14`, `system_a` | 3.0 GB | ext4, read-only: the operating system |
 | `/data` | `mmcblk0p66`, `userdata` | 4.6 GB | ext4, `noexec`, `nosuid`: Docker, settings, the `/etc` overlay |
 | `/etc` | Overlay | | Upper directory `/data/misc/etc/upper`: changes to `/etc` (accounts, SSH) live on `/data` |
-| `/persist` | `mmcblk0p50`, `persist` | 2.2 MB | Per-device data, including the setup network's password (`/persist/data/wifi.bin`) |
+| `/persist` | `mmcblk0p50`, `persist` | 2.2 MB | Per-device data, including the setup network's password (`/persist/data/wifi.bin`). If that file is missing, the vendor boot script reads the password back from the camera module's memory (EEPROM) |
 | `/firmware` | `mmcblk0p25`, `modem_a` | 110 MB | Firmware images |
 | `/systemrw` | `mmcblk0p65`, `systemrw` | 3.9 MB | Persistent system properties |
 | `/cache` | `mmcblk0p16`, `cache` | 58 MB | |
@@ -152,5 +152,7 @@ Trade-offs:
   direct sun and ventilated.
 - **One firmware, one camera.** Everything was tested on one camera, on v0.5370_Perf. The installer
   refuses other firmware unless forced.
-- **Recovery.** Uninstalling restores the vendor software and setup. Reflashing the firmware restores
-  the whole camera.
+- **Recovery.** Uninstalling restores the vendor software and setup. Reflashing Altek's v0.5370_Perf
+  package, tried once, erased the add-on, its settings and the admin account and brought back the
+  vendor setup; the sticker's password still worked, and SSH got new host keys
+  ([PROVENANCE.md](PROVENANCE.md#from-stock-firmware-to-frigate)).

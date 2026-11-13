@@ -33,8 +33,8 @@ the [camera program](../camera/README.md) and serves them to Frigate, VLC or any
   larger than 1400 bytes. Access unit delimiters and filler data are dropped, and the parameter sets
   are put in front of every keyframe that lacks them. Audio: RFC 3640 `AAC-hbr`, one AAC frame per
   packet.
-- **Joining.** A new player gets video from the next keyframe (one per `KEYFRAME_SECONDS`, 1 s by
-  default) and audio from the same moment.
+- **Joining.** A new player gets video from the next keyframe (about one per `KEYFRAME_SECONDS`, 1 s
+  by default) and audio from the same moment.
 - **Slow players.** A player that falls more than 4 MB behind is disconnected rather than allowed to
   hold the others back.
 - **Changes.** When the codec, resolution or audio format changes (for example after new settings

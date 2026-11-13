@@ -61,7 +61,7 @@ this service or, for the live settings, runs `camd.sh reload`.
 | `SUB_ENABLED`, `SUB_WIDTH`, `SUB_HEIGHT`, `SUB_FPS`, `SUB_BITRATE` | Sub stream on or off, and its resolution, frame rate and bitrate. Always H.264 | Restart |
 | `AUDIO_ENABLED`, `AUDIO_BITRATE` | Microphone on the main stream, and its AAC bitrate | Restart |
 | `AUDIO_GAIN_DB` | Microphone gain, 0 to 40 dB (`mic.sh`) | Restart |
-| `KEYFRAME_SECONDS` | Seconds between keyframes, both streams | Restart |
+| `KEYFRAME_SECONDS` | Seconds between keyframes, both streams. The encoder adds a frame: at 1 s, keyframes come every 31 frames at 30 fps and every 6 at 5 fps | Restart |
 | `ANTIFLICKER`, `EXPOSURE_EV`, `WHITE_BALANCE`, `SATURATION`, `SHARPNESS` | Picture: anti-flicker (`auto`, `60`, `50`, `off`), exposure (-2 to 2 EV), white balance, colour (0 to 10) and sharpness (0 to 6) | Live |
 | `OVERLAY`, `OVERLAY_POSITION`, `OVERLAY_STREAMS`, `NAME` | On-screen text: `off`, `time`, `name` or `time-name`; the corner for the date and time; `main` or `both`; the camera name it shows | Restart |
 | `TIME_ZONE` | POSIX time zone of the on-screen clock, e.g. `EST5EDT,M3.2.0,M11.1.0` | `camd.sh tz` |

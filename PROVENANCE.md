@@ -363,10 +363,28 @@ Not tested yet:
   follows go2rtc's RTSP code.
 - Home Assistant's own pan, tilt and zoom controls. Its ONVIF code was replayed against the camera
   with the library version it uses.
-- The sign-in page that phones open by themselves on the setup network (the captive portal).
 - Holding the power button for 5 s with the add-on installed.
 - `install.sh` on macOS or Linux. It was run in Git Bash on Windows.
 - Hidden Wi-Fi networks.
+
+### From stock firmware to Frigate
+
+The camera was reflashed with Altek's v0.5370_Perf package and left without the vendor setup, then
+installed and set up as the README describes:
+
+| Step | Result |
+|---|---|
+| After the reflash | `v0.5370_Perf`; no add-on files or settings; SSH on, with no `AllowUsers` line and no host keys yet; the setup network's password rebuilt at the first boot from the camera module's memory |
+| `install.ps1` on Windows, then first-time setup from a phone | The installer finished and named the setup network; the sticker's password joined it; the phone's sign-in page opened by itself; a new admin account was created; the lights turned solid green |
+| SSH with the new admin account | Signed in from a PC and used `sudo`. The host key matched the fingerprint read over USB after `systemctl start sshdgenkeys.service` |
+| The installed add-on | All 38 files matched the repository; every service running; crash recovery applied; no warnings in its logs |
+| The streams | Main: H.264 High 1920x1080 at 29.4 fps with AAC 48 kHz mono, keyframes every 31 frames. Sub: 640x360 at 5.0 fps, keyframes every 6 frames. The talk-back track only when asked for. ONVIF answered without sign-in |
+| Setup page changes made from the phone | Colour, on-screen text and the frame rate each applied; Frigate picked the streams up again by itself |
+| Frigate 0.18 with the setup page's configuration | Recorded the main stream in 10 s segments of H.264 1920x1080 with AAC 48 kHz mono audio, and read the sub stream at 5.1 fps; the microphone's level reached its audio detector |
+| Pan, tilt and zoom | Frigate's buttons moved the view on the camera, and a preset saved on the setup page appeared in Frigate after Frigate restarted. Zooming in Frigate's player moved nothing on the camera |
+
+Not tried this time: going to a preset from Frigate, talk-back, the power button, **Reset camera**,
+reinstalling and uninstalling.
 
 ## Status lights
 

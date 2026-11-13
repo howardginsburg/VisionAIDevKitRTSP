@@ -90,7 +90,8 @@ minutes the camera opens its setup Wi-Fi network and the installer prints its na
 - **Audio:** AAC-LC, 48 kHz mono, 64 kbps, on the main stream only.
 - **Talk-back:** a send-only G.711 (PCMU or PCMA) audio track, the ONVIF backchannel. Only clients
   that ask for it get it, so players that don't know it, such as VLC, never see it.
-- **Keyframes:** one per second on both streams.
+- **Keyframes:** about one per second on both streams
+  ([details](device/camera/README.md#settings-it-uses)).
 - **Transport:** RTSP over TCP only. Players that try UDP first, such as VLC and ffmpeg, switch to TCP
   by themselves; Frigate and go2rtc use TCP already.
 - **Other settings:** the setup page offers other resolutions, frame rates, bitrates and H.265 for the
@@ -220,7 +221,8 @@ arrows and clicks do nothing until the view is zoomed.
 
 - **Frigate:** with the snippet's `onvif` part, the camera's live view gets arrows, zoom buttons and
   the presets, and you can click on the picture to centre the view there. Frigate reads the presets
-  when it starts, so restart it after saving new ones.
+  when it starts, so restart it after saving new ones. Use those buttons: zooming the picture in
+  Frigate's player (pinch or scroll) doesn't move the camera's view.
 - **Home Assistant:** add the camera with the
   [ONVIF integration](https://www.home-assistant.io/integrations/onvif/): the camera's address, port
   8080, and an empty username and password. Its `onvif.ptz` action then moves the view, for example
@@ -344,7 +346,8 @@ even if the original setup had left it off; the add-on never turns SSH off.
 | Remove the add-on | `.\install.ps1 -Uninstall` | `bash install.sh --uninstall` |
 
 Uninstalling restores the camera's original software and setup experience. Reflashing the firmware
-also removes everything.
+also removes everything, and the camera makes new SSH host keys: remove the old one from your
+computer with `ssh-keygen -R <camera-ip>`.
 
 ## Troubleshooting
 
