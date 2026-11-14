@@ -26,7 +26,7 @@ the add-on is installed, set up and removed.
 %%{init: {"flowchart": {"wrappingWidth": 420}}}%%
 flowchart TB
     you["You<br/>Frigate, Home Assistant, VLC or another RTSP player · a browser<br/>the installers over USB · SSH, optional"]
-    addon["The add-on, in /opt/vaidk<br/>camera program · RTSP server · ONVIF service · Wi-Fi watchdog<br/>setup page · boot script · status-light stand-in · crash recovery"]
+    addon["The add-on, in /opt/vaidk<br/>camera program · RTSP server · ONVIF service · Wi-Fi watchdog<br/>setup page · boot script · status-light stand-in<br/>crash recovery · storage upkeep"]
     vendor["The camera's own software, kept<br/>qmmf-server with the camera and audio HALs<br/>altekflow · Wi-Fi tools · sshd · adbd"]
     fw["Qualcomm firmware and Linux 4.9, unchanged<br/>32-bit, read-only root file system"]
     hw["Vision AI DevKit<br/>Qualcomm QCS603 · 8 MP Sony IMX334 sensor<br/>microphones · speaker · Wi-Fi · three lights · power button"]
@@ -58,7 +58,7 @@ flowchart TB
   and changes a few things around them: its own copy of the boot script runs instead of the
   vendor's, the vendor preview server is disabled, `qmmf-server` gets a time zone, and the admin
   account is an ordinary Linux user.
-- **The add-on.** Six systemd services and the boot script, in `/opt/vaidk`. Your settings are in
+- **The add-on.** Seven systemd services and the boot script, in `/opt/vaidk`. Your settings are in
   `/data/misc/vaidk`.
 - **You.** RTSP players and NVRs, a browser for the setup page, the installers over USB, and SSH if
   you want it.
@@ -74,6 +74,7 @@ flowchart TB
 | Wi-Fi | `vaidk-wifi.service` | Keeps Wi-Fi connected, opens the setup network when it can't, joins new networks | [device/wifi](device/wifi/README.md) |
 | Setup page | `vaidk-web.service` | First-time setup and settings, on port 80 | [device/web](device/web/README.md) |
 | Crash recovery | `vaidk-recovery.service` | `recovery.sh`, once at boot: turns off Qualcomm's crash-dump mode and has the kernel restart the camera after a crash | [device/recovery](device/recovery/README.md) |
+| Storage upkeep | `vaidk-storage.service` | `storage.sh`: keeps the vendor's properties file in RAM and saves it to flash only when it changes, records crashes without crash dumps, and trims logs in RAM every 10 minutes | [device/storage](device/storage/README.md) |
 | Status lights | The vendor's `altekflow` | A stand-in for `docker` makes the "IoT Hub connected" light mean "streaming" | [device/lights](device/lights/README.md) |
 
 The vendor software the add-on relies on, and what it does now:
@@ -85,6 +86,7 @@ The vendor software the add-on relies on, and what it does now:
 | `ipc-webserver` | The vendor preview server. Disabled: it would compete for the camera |
 | `altekflow` | The lights, the power button (hold it 5 s for the setup network) and the battery's over-temperature shutdown |
 | `wifimonitor` | Reports the Wi-Fi connection to `altekflow` |
+| `leprop-service` | The property service: rewrites the saved properties file, `/systemrw/build.prop`, whenever a program sets a `persist.` property. `altekflow` sets two of them about twice a second, so while the add-on runs, the file it rewrites is a copy in RAM ([storage upkeep](device/storage/README.md)) |
 | `startvirtualsoftap`, `hostapd`, `dnsmasq` | The setup network |
 | `wpa_supplicant`, `udhcpc` | The Wi-Fi client |
 | BusyBox `httpd` | Serves the setup page |
@@ -214,7 +216,9 @@ flowchart LR
   ([how altekflow decides](device/lights/README.md#how-altekflow-decides)). What each light means is
   in the [README](README.md#status-lights).
 - The setup page and `ui.sh info` (which the installers read) report from the same sources: the
-  RTSP server's files and the Wi-Fi client's state.
+  RTSP server's files and the Wi-Fi client's state. The setup page's **System** section adds the
+  kernel's own counters and the crash records that storage upkeep keeps
+  ([what each line shows](device/web/README.md#the-system-section)).
 
 ### Run-time files
 
@@ -235,6 +239,9 @@ flowchart LR
 | `scan`, `scan.conf` | The setup page (cached scan results) and `wifi.sh scan` | The setup page |
 | `csrf` | The setup page, once per boot | The setup page (form tokens) |
 | `httpd.conf` | `ui.sh write-httpd-conf` | BusyBox `httpd` (the sign-in rule) |
+| `build.prop` | `storage.sh`, which copies it from `/systemrw` at boot and binds it over `/systemrw/build.prop` and `/etc/build.prop`; then `leprop-service` | Every program that reads or sets a vendor property; `storage.sh`, which saves it to flash when it changed |
+| `crashes` | `storage.sh crash`, which the kernel runs when a program crashes; the cleanup, for crash dumps from before the service started | The setup page's **System** section; you |
+| `flash.<pid>` (a folder) | `storage.sh`, for the moment it takes to save `build.prop`: a private bind of `/systemrw` | `storage.sh` |
 
 ## Settings: one file, two ways to change it
 
@@ -299,6 +306,7 @@ Besides the settings, the add-on keeps:
 | `/data/misc/vaidk/ptz` | The pan, tilt and zoom position, home position and presets | `onvifd.py` |
 | `/etc/passwd`, `/etc/shadow`, `/etc/ssh/sshd_config` | The admin account itself, and its `AllowUsers` entry if `sshd` has that list. `/etc` is the vendor's overlay on `/data` | `useradd` and `chpasswd`, run by `ui.sh` |
 | `/etc/systemd/system/sockets.target.wants/sshd.socket` | SSH at boot. The image has this link already; it is written again only if SSH had been turned off, for example by the vendor setup | `systemctl enable`, run by `ui.sh` |
+| `/systemrw/build.prop` | The vendor's saved properties. While the add-on runs, programs use a copy in RAM ([run-time files](#run-time-files)) | `storage.sh`, which writes the copy back when it has changed: every 10 minutes, and when it stops |
 
 `ui.sh forget` deletes all of `/data/misc/vaidk`, and the admin account if the add-on created it,
 then restarts the ONVIF service so it forgets the presets it holds.
@@ -322,6 +330,9 @@ flowchart TB
     svc --> web["vaidk-web<br/>the setup page"]
     svc --> watch["vaidk-wifi<br/>waits for boot-wifi-done"]
     svc --> recovery["vaidk-recovery<br/>restart after a crash"]
+    svc --> storage["vaidk-storage<br/>records crashes at once"]
+    rest -- "/etc overlay, build.prop bound again" --> storage
+    storage --> ram["build.prop in RAM<br/>cleanup every 10 minutes"]
     qmmf --> cam["vaidk-camera<br/>waits for the audio calibration, then vaidk-camd"]
     rtsp --> cam
     cam --> streaming["Streaming"]
@@ -329,7 +340,7 @@ flowchart TB
     classDef mod fill:#dae8fc,stroke:#6c8ebf,color:#1a1a1a
     classDef os fill:#fff2cc,stroke:#d6b656,color:#1a1a1a
     classDef use fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
-    class init,join,done,rtsp,web,watch,recovery,cam,onvif mod
+    class init,join,done,rtsp,web,watch,recovery,storage,ram,cam,onvif mod
     class ap,rest,altek,svc,qmmf os
     class power,saved,streaming use
 ```
@@ -337,18 +348,23 @@ flowchart TB
 - **The boot script** is the vendor's own, with five changes
   ([what changes](device/boot/README.md#what-changes)). The vendor file stays untouched; a systemd
   drop-in points `InitCamx.service` at the copy.
-- **The services start alongside it.** Two of them wait: the Wi-Fi watchdog waits for the boot
-  script's Wi-Fi step, and the camera service waits for the vendor media server's audio calibration
-  ([start-up](device/camera/README.md#start-up)). The ONVIF service starts after the camera service,
-  and crash recovery runs once, as soon as `/data` is mounted.
+- **The services start alongside it.** Three of them wait: the Wi-Fi watchdog waits for the boot
+  script's Wi-Fi step; the camera service waits for the vendor media server's audio calibration
+  ([start-up](device/camera/README.md#start-up)); and storage upkeep, which starts with the boot
+  script and records crashes from then on, waits for the boot script to mount its `/etc` overlay and
+  bind the properties file onto it again before it moves that file to RAM
+  ([storage upkeep](device/storage/README.md#the-properties-file)). The ONVIF service starts after
+  the camera service, and crash recovery runs once, as soon as `/data` is mounted.
 - **At shutdown** the boot script does nothing. The vendor's ran its whole boot sequence again.
+  Storage upkeep stops before the file systems are unmounted: it saves the properties file if it
+  changed, and gives the vendor its file back.
 
 Where the add-on lives:
 
 | Location | File system | What |
 |---|---|---|
 | `/opt/vaidk` | The root, read-only (`mmcblk0p14`) | The add-on. It is on the root because `/data` is mounted `noexec`, so `vaidk-camd` couldn't run from there |
-| `/lib/systemd/system` | The root | The six units, the boot script's drop-in in `InitCamx.service.d/`, and the time zone drop-in in `qmmf-server.service.d/` |
+| `/lib/systemd/system` | The root | The seven units, the boot script's drop-in in `InitCamx.service.d/`, and the time zone drop-in in `qmmf-server.service.d/` |
 | `/home/<admin>` | The root | The admin account's home directory, when the add-on created the account |
 | `/data/misc/vaidk` | `/data`, read-write | Your settings, Wi-Fi network, admin account record, and the pan, tilt and zoom presets |
 | `/run/vaidk` | RAM | [Run-time files](#run-time-files) |
@@ -472,5 +488,6 @@ device/                      everything copied to /opt/vaidk on the camera; devi
   wifi/                      wifi.sh and the unit
   web/                       ui.sh, www/ (the setup page's files) and the unit
   recovery/                  recovery.sh and the unit
+  storage/                   storage.sh and the unit
   lights/                    the docker stand-in for altekflow
 ```

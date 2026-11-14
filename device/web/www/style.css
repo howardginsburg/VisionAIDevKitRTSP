@@ -27,6 +27,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
 code, pre { font-family: ui-monospace, Consolas, monospace; font-size: .9em; }
 pre { overflow-x: auto; padding: .75rem; border-radius: .4rem; background: #8881; margin: 0; }
 .hint { color: var(--muted); font-size: .9rem; margin: 0 0 .75rem; }
+dl + .hint { margin: .75rem 0 0; }
 .note, .error { padding: .6rem .8rem; border-radius: .4rem; }
 .note { background: #0a7b2a22; }
 .error { background: #c42b1c22; }

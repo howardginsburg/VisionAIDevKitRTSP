@@ -43,7 +43,8 @@ camera's new address, then the camera restarts.
 
 | Section | What it shows or changes |
 |---|---|
-| Status | Wi-Fi network and signal, address, stream health, the stream URLs, microphone, talk-back, pan, tilt and zoom, camera temperature, battery, how long the camera has been running |
+| Status | Wi-Fi network and signal, address, stream health, the stream URLs, microphone, talk-back, pan, tilt and zoom |
+| System | The camera's health, measured as the page loads ([what each line shows](#the-system-section)). **Refresh** measures again |
 | Camera streams | Main: resolution, frame rate, bitrate, codec. Sub: on or off, resolution, frame rate, bitrate. Microphone: on or off, gain. Saving restarts the camera service |
 | Picture | Light flicker, exposure, white balance, colour and sharpness. Saving applies them at once (`camd.sh reload`) |
 | On-screen text | Date and time, camera name or both; the corner; main stream or both; the time zone (a list, or a POSIX string). Saving updates `qmmf-server`'s time zone if it changed (`camd.sh tz`) and restarts the camera service |
@@ -56,6 +57,28 @@ camera's new address, then the camera restarts.
 
 **Reset camera** forgets the Wi-Fi network, the settings, the pan, tilt and zoom presets and the admin
 account, then restarts in setup mode.
+
+### The System section
+
+`ui.sh` reads the kernel's counters twice, one second apart, and works out the rates from the
+difference, so the settings page takes about a second longer to load.
+
+| Line | What it shows | Read from |
+|---|---|---|
+| Processor | How busy the processor was, overall and per core; whether its top speed is held back, for example by heat | `/proc/stat`; each cluster's `scaling_max_freq` against its `cpuinfo_max_freq` |
+| Busiest programs | The five programs that used the most processor time, in % of one core. The add-on's Python services are named by their script | `/proc/<pid>/stat` (user and system time) and, for Python, `/proc/<pid>/cmdline` |
+| Memory | Memory in use: the total minus what is available | `/proc/meminfo` |
+| Temperatures | The hottest processor core, the camera and the Wi-Fi chip. The battery's sensor reads 40.0 °C at every reading on this camera, so it isn't shown | The thermal zones `cpu*-usr`, `camera-usr` and `wlan-usr` |
+| Data storage, System storage | Space used on `/data` (settings, Docker's images) and on the read-only root | `df` |
+| Logs and temporary files | Space used in RAM by `/run` and `/var/volatile`, and the system log's limit | `df`; `RuntimeMaxUse` in `/etc/systemd/journald.conf` |
+| Flash writes | What has been written to the flash since the camera started, and the average per day | `/sys/block/mmcblk0/stat` |
+| Flash wear | The flash chip's own estimate of its rated life used, and a warning if its spare blocks run low | `life_time` and `pre_eol_info` in `/sys/block/mmcblk0/device` |
+| Battery, Power | Charge, state and voltage; the power source, with a warning on a computer's USB port, where the battery can run down while streaming | `/sys/class/power_supply`: `battery`, `usb`, `pc_port`, `dc` |
+| Wi-Fi link | Band, channel and transmit rate | `iw dev wlan0 link` |
+| Wi-Fi traffic | Sent and received during that second, and since the camera started | `wlan0`'s byte counters |
+| Stream viewers | The address of each player connected to the main and sub streams | Established connections to ports 8900 and 8901 in `/proc/net/tcp` and `tcp6` |
+| Crashes since start | How many programs crashed since the camera started, and the latest | `/run/vaidk/crashes`, kept by [storage upkeep](../storage/README.md#crashes) |
+| Running for, Firmware | Time since the camera started; the firmware version | `/proc/uptime`, `/etc/version` |
 
 ## The admin account
 

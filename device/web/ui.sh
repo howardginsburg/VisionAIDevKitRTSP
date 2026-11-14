@@ -123,12 +123,6 @@ saved_ssid() {
 wifi_ssid() { wpa_cli -p /var/run/wpa_supplicant -i wlan0 status 2>/dev/null | sed -n 's/^ssid=//p'; }
 wifi_connected() { [ "$(wpa_cli -p /var/run/wpa_supplicant -i wlan0 status 2>/dev/null | sed -n 's/^wpa_state=//p')" = COMPLETED ] && [ -n "$(wlan_ip)" ]; }
 wifi_signal() { iw dev wlan0 link 2>/dev/null | sed -n 's/^[[:space:]]*signal: \(-*[0-9]*\) dBm.*/\1/p'; }
-camera_temp() {
-    for z in /sys/class/thermal/thermal_zone*; do
-        if [ "$(cat "$z/type" 2>/dev/null)" = camera-usr ]; then echo $(( $(cat "$z/temp") / 1000 )); return; fi
-    done
-}
-battery() { printf '%s%% (%s)' "$(cat /sys/class/power_supply/battery/capacity 2>/dev/null)" "$(cat /sys/class/power_supply/battery/status 2>/dev/null)"; }
 uptime_text() {
     s=$(uptime_s); d=$((s / 86400)); hr=$((s % 86400 / 3600)); m=$((s % 3600 / 60))
     if [ $d -gt 0 ]; then printf '%dd %dh %dm' $d $hr $m; else printf '%dh %dm' $hr $m; fi
@@ -506,11 +500,221 @@ status_section() {
     if [ "$AUDIO_ENABLED" = 1 ]; then item "Microphone" "On, +${AUDIO_GAIN_DB} dB gain (main stream)"; else item "Microphone" "Off"; fi
     if [ "$TALKBACK" = 1 ]; then item "Talk-back" "On, speaker volume ${SPEAKER_VOLUME}%"; else item "Talk-back" "Off"; fi
     if [ "$ONVIF" = 1 ]; then item "Pan, tilt and zoom" "On, ONVIF port $ONVIF_PORT"; else item "Pan, tilt and zoom" "Off"; fi
-    t=$(camera_temp)
-    if [ -n "$t" ]; then printf '<dt>Camera temperature</dt><dd>%s &deg;C</dd>' "$t"; fi
-    item "Battery" "$(battery)"
-    item "Running for" "$(uptime_text)"
     printf '</dl></section>'
+}
+
+# ----- System section -----
+
+fmt_kb() { # fmt_kb KILOBYTES -> "1.3 GB", "75 MB" or "512 KB"
+    if [ "$1" -ge 1048576 ]; then g=$(( ($1 * 10 + 524288) / 1048576 )); printf '%d.%d GB' $((g / 10)) $((g % 10))
+    elif [ "$1" -ge 1024 ]; then printf '%d MB' $(( ($1 + 512) / 1024 ))
+    else printf '%d KB' "$1"; fi
+}
+ghz() { g=$(( ($1 + 50000) / 100000 )); printf '%d.%d' $((g / 10)) $((g % 10)); }    # kHz
+volts() { v=$(( ($1 + 5000) / 10000 )); printf '%d.%02d' $((v / 100)) $((v % 100)); } # microvolts
+age() { # age SECONDS -> "5 min", "3 h" or "2 days"
+    if [ "$1" -lt 3600 ]; then echo "$(( $1 / 60 )) min"
+    elif [ "$1" -lt 172800 ]; then echo "$(( $1 / 3600 )) h"
+    else echo "$(( $1 / 86400 )) days"; fi
+}
+
+system_snapshot() { # system_snapshot N: the counters system_load compares
+    up=0; tx=0; rx=0
+    read -r up _ 2>/dev/null < /proc/uptime
+    read -r tx 2>/dev/null < /sys/class/net/wlan0/statistics/tx_bytes
+    read -r rx 2>/dev/null < /sys/class/net/wlan0/statistics/rx_bytes
+    echo "@ $1 $up $tx $rx"
+    grep '^cpu' /proc/stat
+    cat /proc/[0-9]*/stat 2>/dev/null
+}
+system_load() { # "cpu %", "cores % ...", "net TX RX" (Mbit/s) and "top % PID NAME" lines, over one second
+    # Both readings come first, so that working them out doesn't count as load.
+    s1=$(system_snapshot 1); sleep 1; s2=$(system_snapshot 2)
+    printf '%s\n%s\n' "$s1" "$s2" | awk '
+        function pct(b2, b1, a2, a1) { return (a2 > a1) ? int(100 * (b2 - b1) / (a2 - a1) + 0.5) : "" }
+        $1 == "@" { s = $2; up[s] = $3; tx[s] = $4; rx[s] = $5; next }
+        /^cpu/ {
+            b = $2 + $3 + $4 + $7 + $8 + $9; busy[s, $1] = b; all[s, $1] = b + $5 + $6
+            if (s == 1 && $1 != "cpu") core[++nc] = $1
+            next
+        }
+        {   # /proc/PID/stat: "PID (NAME) STATE ...", where NAME may hold spaces and brackets
+            r = $0; k = 0
+            while ((p = index(r, ")")) > 0) { k += p; r = substr(r, p + 1) }
+            split(substr($0, k + 2), f, " ")
+            if (s == 1) { t1[$1] = f[12] + f[13]; next }
+            if ($1 in t1) { used[$1] = f[12] + f[13] - t1[$1]; i = index($0, "("); name[$1] = substr($0, i + 1, k - i - 1) }
+        }
+        END {
+            dt = up[2] - up[1]; if (dt <= 0) dt = 1
+            printf "cpu %s\ncores", pct(busy[2, "cpu"], busy[1, "cpu"], all[2, "cpu"], all[1, "cpu"])
+            for (i = 1; i <= nc; i++) { c = core[i]; v = pct(busy[2, c], busy[1, c], all[2, c], all[1, c]); if (v != "") printf " %s", v }
+            printf "\nnet %.1f %.1f\n", (tx[2] - tx[1]) * 8 / dt / 1e6, (rx[2] - rx[1]) * 8 / dt / 1e6
+            for (n = 0; n < 5; n++) { # in % of one core: the kernel counts 100 ticks a second
+                best = ""
+                for (p in used) if (best == "" || used[p] > used[best]) best = p
+                if (best == "" || used[best] / dt < 1) break
+                printf "top %d %s %s\n", used[best] / dt + 0.5, best, name[best]
+                delete used[best]
+            }
+        }'
+}
+prog_label() { # prog_label PID NAME: how the busiest-programs list shows a program
+    case "$2" in
+        python3*)
+            case "$(tr '\0' ' ' 2>/dev/null < "/proc/$1/cmdline")" in
+                *rtspd.py*) echo "rtspd.py (RTSP)" ;;
+                *onvifd.py*) echo "onvifd.py (PTZ)" ;;
+                *) echo "$2" ;;
+            esac ;;
+        qmmf-server) echo "qmmf-server (camera)" ;;
+        vaidk-camd) echo "vaidk-camd (streams)" ;;
+        altekflow) echo "altekflow (lights)" ;;
+        dockerd|containerd) echo "$2 (Docker, unused)" ;;
+        *) echo "$2" ;;
+    esac
+}
+cpu_limit() { # "; top speed limited to X of Y GHz" when something (such as heat) holds the processor back
+    for d in /sys/devices/system/cpu/cpufreq/policy*; do
+        m=; x=
+        read -r m 2>/dev/null < "$d/scaling_max_freq"
+        read -r x 2>/dev/null < "$d/cpuinfo_max_freq"
+        if [ -n "$m" ] && [ -n "$x" ] && [ "$m" -lt "$x" ]; then
+            printf '; top speed limited to %s of %s GHz' "$(ghz "$m")" "$(ghz "$x")"
+            return
+        fi
+    done
+}
+temperatures() { # "processor 52 &deg;C, camera 51 &deg;C, Wi-Fi 50 &deg;C" (HTML). The battery's sensor reads
+    # a fixed value on this camera (README.md), so it isn't shown.
+    set -- $(grep -E '^(cpu[0-9]+-(silver|gold)-usr|camera-usr|wlan-usr)$' /sys/class/thermal/thermal_zone*/type 2>/dev/null |
+        while IFS=: read -r f z; do v=; read -r v 2>/dev/null < "${f%/type}/temp" && echo "${z%%-*} $v"; done |
+        awk '{ k = ($1 ~ /^cpu/) ? "cpu" : $1; if (!(k in m) || $2 > m[k]) m[k] = $2 }
+            END { split("cpu camera wlan", ks, " "); for (i = 1; i <= 3; i++) printf "%s ", (ks[i] in m) ? int(m[ks[i]] / 1000 + 0.5) : "-" }')
+    out=""
+    if [ "${1:--}" != - ]; then out="processor $1 &deg;C"; fi
+    if [ "${2:--}" != - ]; then out="$out${out:+, }camera $2 &deg;C"; fi
+    if [ "${3:--}" != - ]; then out="$out${out:+, }Wi-Fi $3 &deg;C"; fi
+    printf '%s' "$out"
+}
+viewers() { # "PORT ADDRESS CONNECTIONS" for each client of the RTSP streams (ports 8900 and 8901)
+    awk -v H=0123456789ABCDEF '$4 == "01" {
+            split($2, l, ":"); split($3, r, ":")
+            if (l[2] != "22C4" && l[2] != "22C5") next
+            a = r[1]
+            if (length(a) == 32) { if (substr(a, 1, 24) != "0000000000000000FFFF0000") next; a = substr(a, 25) }
+            # Little-endian hex; written without "name (" because busybox awk reads that as a call
+            for (i = 7; i >= 1; i -= 2) {
+                v = 16 * (index(H, substr(a, i, 1)) - 1) + index(H, substr(a, i + 1, 1)) - 1
+                ip = (i == 7) ? v : ip "." v
+            }
+            n[l[2] " " ip]++
+        }
+        END { for (k in n) print k, n[k] }' /proc/net/tcp /proc/net/tcp6 2>/dev/null | sort
+}
+
+system_section() {
+    load=$(system_load)
+    cpu=; cores=; tx_rate=; rx_rate=; progs=
+    while read -r key k1 k2 k3; do
+        case "$key" in
+            cpu) cpu=$k1 ;;
+            cores) cores="$k1 $k2 $k3" ;;
+            net) tx_rate=$k1; rx_rate=$k2 ;;
+            top) progs="$progs${progs:+, }$(prog_label "$k2" "$k3") $k1%" ;;
+        esac
+    done <<EOF
+$load
+EOF
+    printf '<section id="system"><h2>System</h2><dl>'
+    if [ -n "$cpu" ]; then
+        per=""
+        for v in $cores; do per="$per${per:+, }$v%"; done
+        item "Processor" "$cpu% busy${per:+ (cores: $per)}$(cpu_limit)"
+    fi
+    if [ -n "$progs" ]; then item "Busiest programs" "$progs (of one core)"; fi
+    set -- $(awk '/^MemTotal:/ { t = $2 } /^MemAvailable:/ { a = $2 } END { print t - a, t + 0 }' /proc/meminfo)
+    if [ "${2:-0}" -gt 0 ]; then item "Memory" "$(fmt_kb "$1") of $(fmt_kb "$2") in use ($(( $1 * 100 / $2 ))%)"; fi
+    temps=$(temperatures)
+    if [ -n "$temps" ]; then printf '<dt>Temperatures</dt><dd>%s</dd>' "$temps"; fi
+
+    set -- $(df -Pk /data / /run /var/volatile 2>/dev/null |
+        awk 'NR > 1 { t[$6] = $2; u[$6] = $3 } END { print t["/data"] + 0, u["/data"] + 0, t["/"] + 0, u["/"] + 0, u["/run"] + u["/var/volatile"] }')
+    if [ "${1:-0}" -gt 0 ]; then item "Data storage" "$(fmt_kb "$2") of $(fmt_kb "$1") used ($(( $2 * 100 / $1 ))%)"; fi
+    if [ "${3:-0}" -gt 0 ]; then item "System storage" "$(fmt_kb "$4") of $(fmt_kb "$3") used (read-only)"; fi
+    cap=$(sed -n 's/^[[:space:]]*RuntimeMaxUse=//p' /etc/systemd/journald.conf 2>/dev/null | tail -n 1)
+    case "$cap" in *M) cap="${cap%M} MB" ;; *G) cap="${cap%G} GB" ;; esac
+    item "Logs and temporary files" "$(fmt_kb "${5:-0}") in RAM${cap:+; the system log keeps up to $cap}"
+    w=; read -r _ _ _ _ _ _ w _ 2>/dev/null < /sys/block/mmcblk0/stat
+    up=$(uptime_s)
+    if [ -n "$w" ] && [ "$up" -gt 0 ]; then
+        item "Flash writes" "$(fmt_kb $((w / 2))) since start, on average $(fmt_kb $((w / 2 * 86400 / up))) a day"
+    fi
+    la=0; lb=0; eol=0
+    read -r la lb 2>/dev/null < /sys/block/mmcblk0/device/life_time
+    read -r eol 2>/dev/null < /sys/block/mmcblk0/device/pre_eol_info
+    lt=$(( ${la:-0} > ${lb:-0} ? ${la:-0} : ${lb:-0} ))
+    wear=""
+    if [ "$lt" -ge 1 ] && [ "$lt" -le 10 ]; then wear="$((lt * 10 - 10))&ndash;$((lt * 10))% of its rated life used"
+    elif [ "$lt" -ge 11 ]; then wear="past its rated life"; fi
+    case "$(( ${eol:-0} ))" in
+        2) wear="$wear${wear:+; }spare blocks running low" ;;
+        3) wear="$wear${wear:+; }spare blocks nearly used up" ;;
+    esac
+    if [ -n "$wear" ]; then printf '<dt>Flash wear</dt><dd>%s</dd>' "$wear"; fi
+
+    P=/sys/class/power_supply
+    pcap=; st=; uv=; usb=; uvolts=; pc=; pcmax=; dc=
+    read -r pcap 2>/dev/null < $P/battery/capacity
+    read -r st 2>/dev/null < $P/battery/status
+    read -r uv 2>/dev/null < $P/battery/voltage_now
+    read -r usb 2>/dev/null < $P/usb/online
+    read -r uvolts 2>/dev/null < $P/usb/voltage_now
+    read -r pc 2>/dev/null < $P/pc_port/online
+    read -r pcmax 2>/dev/null < $P/pc_port/current_max
+    read -r dc 2>/dev/null < $P/dc/online
+    if [ -n "$pcap" ]; then
+        case "$st" in Charging) st=charging ;; Discharging) st="on battery" ;; Full) st=full ;; "Not charging") st="not charging" ;; esac
+        item "Battery" "$pcap%, $st${uv:+, $(volts "$uv") V}"
+    fi
+    if [ "$pc" = 1 ]; then power="a computer's USB port${pcmax:+ (up to $((pcmax / 1000)) mA)}: the battery can run down while streaming"
+    elif [ "$usb" = 1 ]; then power="USB charger${uvolts:+, $(volts "$uvolts") V}"
+    elif [ "$dc" = 1 ]; then power="DC input"
+    else power="none, running on the battery"; fi
+    item "Power" "$power"
+
+    link=$(iw dev wlan0 link 2>/dev/null | awk '/freq:/ { f = $2 } /tx bitrate:/ { r = $3 }
+        END { if (f) { b = "2.4"; c = (f == 2484) ? 14 : (f - 2407) / 5; if (f > 4000) { b = "5"; c = (f - 5000) / 5 }
+                       printf "%s GHz, channel %d, %s Mbit/s", b, c, r } }')
+    if [ -n "$link" ]; then item "Wi-Fi link" "$link"; fi
+    txb=0; rxb=0
+    read -r txb 2>/dev/null < /sys/class/net/wlan0/statistics/tx_bytes
+    read -r rxb 2>/dev/null < /sys/class/net/wlan0/statistics/rx_bytes
+    item "Wi-Fi traffic" "sending ${tx_rate:-0} Mbit/s, receiving ${rx_rate:-0} Mbit/s; since start $(fmt_kb $((txb / 1024))) sent, $(fmt_kb $((rxb / 1024))) received"
+    main=; sub=
+    while read -r port addr count; do
+        [ -n "$port" ] || continue
+        if [ "$count" -gt 1 ]; then addr="$addr ($count connections)"; fi
+        case "$port" in 22C4) main="$main${main:+, }$addr" ;; 22C5) sub="$sub${sub:+, }$addr" ;; esac
+    done <<EOF
+$(viewers)
+EOF
+    v="main: ${main:-none}"
+    if [ "$SUB_ENABLED" = 1 ] || [ -n "$sub" ]; then v="$v; sub: ${sub:-none}"; fi
+    item "Stream viewers" "$v"
+
+    if [ -s "$RUN_DIR/crashes" ]; then
+        set -- $(tail -n 1 "$RUN_DIR/crashes")
+        ago=$(( $(date +%s) - $1 ))
+        if [ "$ago" -ge 0 ]; then ago=", $(age "$ago") ago"; else ago=""; fi
+        item "Crashes since start" "$(wc -l < "$RUN_DIR/crashes") (latest: $2, signal $3$ago)"
+    else
+        item "Crashes since start" "none"
+    fi
+    item "Running for" "$(uptime_text)"
+    fw=; read -r fw 2>/dev/null < /etc/version
+    if [ -n "$fw" ]; then item "Firmware" "$fw"; fi
+    printf '</dl><p class="hint">Measured over one second as the page loaded. <a href="%s#system">Refresh</a></p></section>' "$SELF"
 }
 
 streams_section() {
@@ -763,6 +967,7 @@ settings_page() {
     printf '</header>'
     show_message
     status_section
+    system_section
     streams_section
     picture_section
     overlay_section

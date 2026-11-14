@@ -1,0 +1,15 @@
+[Unit]
+Description=Vision AI DevKit storage upkeep (vendor properties file in RAM, crash records, cleanup)
+After=InitCamx.service
+# Ordered so that at shutdown "stop" saves the properties file while the partition and the binds on
+# build.prop are still mounted.
+RequiresMountsFor=/systemrw/build.prop /etc/build.prop
+
+[Service]
+ExecStart=/bin/sh /opt/vaidk/storage/storage.sh run
+ExecStop=/bin/sh /opt/vaidk/storage/storage.sh stop
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

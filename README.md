@@ -21,6 +21,12 @@ account, IoT Hub or SSH is needed: you install it over USB and finish setup from
 - **Recovers by itself:** if a stream stalls, the camera restarts its camera pipeline while players
   stay connected; if the camera crashes, it restarts; and if it can't reach its Wi-Fi network for 5
   minutes, it opens its setup network so you can pick another one.
+- **Camera health:** the setup page shows the processor, the busiest programs, memory, storage,
+  flash writes and wear, temperatures, battery and power, the Wi-Fi link and traffic, who is
+  watching each stream, and crashes.
+- **Spares its flash:** the vendor's software rewrote a file on the camera's flash about twice a
+  second; the add-on keeps that file in RAM and saves it only when it changes. Crash dumps aren't
+  kept, and logs stay in RAM within fixed limits, so nothing fills up over time.
 - **Status lights:** solid green means the camera is on Wi-Fi and streaming.
 - **SSH:** the admin account is also your SSH login. Creating it turns SSH on, as ticking
   **SSH enabled** did in the original setup.
@@ -290,8 +296,9 @@ steady background noise, so a quiet room sounds nearly silent and voices come th
 ## Change settings
 
 Open `http://<camera-ip>/` and sign in with the admin account. The page shows the camera's status
-(Wi-Fi, address, stream health, microphone, talk-back, pan, tilt and zoom, temperature and battery)
-and lets you:
+(Wi-Fi, address, stream health, microphone, talk-back, pan, tilt and zoom) and its health (processor,
+memory, storage, flash, temperatures, battery and power, Wi-Fi link, stream viewers and crashes;
+[details](device/web/README.md#the-system-section)), and lets you:
 
 - change the main and sub stream resolution, frame rate, bitrate and codec;
 - turn the microphone on or off and set its gain;
@@ -353,9 +360,12 @@ computer with `ssh-keygen -R <camera-ip>`.
 
 - **No camera found:** check the cable, then run `adb devices`. Restart the camera if it isn't
   listed.
-- **Status from USB:** `adb shell sh /opt/vaidk/web/ui.sh info`, and for the streams
-  `adb shell cat /run/vaidk/rtsp.status`.
-- **Logs:** `adb shell journalctl -u vaidk-camera -u vaidk-rtsp -u vaidk-onvif -u vaidk-wifi -u vaidk-web -u vaidk-recovery --no-pager -n 50`
+- **Status from USB:** `adb shell sh /opt/vaidk/web/ui.sh info`, for the streams
+  `adb shell cat /run/vaidk/rtsp.status`, and for programs that crashed since the camera started
+  `adb shell cat /run/vaidk/crashes`.
+- **Logs:** `adb shell journalctl -u vaidk-camera -u vaidk-rtsp -u vaidk-onvif -u vaidk-wifi -u vaidk-web -u vaidk-recovery -u vaidk-storage --no-pager -n 50`.
+  The camera keeps its logs in RAM only, and its Wi-Fi driver's messages fill them in less than an
+  hour ([why](ASSESSMENT.md#writes-and-logs)), so look soon after a problem; a restart clears them.
 - **Boot log:** `adb shell cat /data/misc/wifi/docker_boot`
 - **The camera stopped and its lights are off:** its battery may have run flat, for example on a
   computer's USB port. Plug it into its power supply and hold the power button until the lights turn
@@ -398,8 +408,9 @@ computer with `ssh-keygen -R <camera-ip>`.
 The add-on keeps the camera's own firmware and its Qualcomm camera service, `qmmf-server`, and
 replaces everything above it. A small native program, `vaidk-camd`, runs the camera, the microphone
 and the speaker; a Python RTSP server serves the streams and the talk-back channel; a Python ONVIF
-service moves the digital view; shell scripts run Wi-Fi, the setup page, crash recovery and the boot
-sequence, without the retired IoT Hub step. Nothing needs Azure or any other cloud service.
+service moves the digital view; shell scripts run Wi-Fi, the setup page, crash recovery, storage
+upkeep and the boot sequence, without the retired IoT Hub step. Nothing needs Azure or any other
+cloud service.
 
 ## Documentation
 
@@ -408,7 +419,7 @@ sequence, without the retired IoT Hub step. Nothing needs Azure or any other clo
 | [ARCHITECTURE.md](ARCHITECTURE.md) | How the pieces fit together: layers, data flow, settings, boot, install and the camera's states |
 | [ASSESSMENT.md](ASSESSMENT.md) | The camera as it came: hardware, software, and why it stopped working out of the box |
 | [PROVENANCE.md](PROVENANCE.md) | How each feature was made to work without Azure, how it was tested, and where every piece comes from |
-| [device/README.md](device/README.md) | The add-on on the camera, with a README for each component: boot script, camera, RTSP server, pan, tilt and zoom, Wi-Fi, setup page, crash recovery, status lights |
+| [device/README.md](device/README.md) | The add-on on the camera, with a README for each component: boot script, camera, RTSP server, pan, tilt and zoom, Wi-Fi, setup page, crash recovery, storage upkeep, status lights |
 | [camd/README.md](camd/README.md) | The camera program, `vaidk-camd`, and how to rebuild it |
 
 ## License

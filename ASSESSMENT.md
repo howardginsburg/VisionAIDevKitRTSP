@@ -50,9 +50,23 @@ Everything else was read from the camera itself.
 | `/etc` | Overlay | | Upper directory `/data/misc/etc/upper`: changes to `/etc` (accounts, SSH) live on `/data` |
 | `/persist` | `mmcblk0p50`, `persist` | 2.2 MB | Per-device data, including the setup network's password (`/persist/data/wifi.bin`). If that file is missing, the vendor boot script reads the password back from the camera module's memory (EEPROM) |
 | `/firmware` | `mmcblk0p25`, `modem_a` | 110 MB | Firmware images |
-| `/systemrw` | `mmcblk0p65`, `systemrw` | 3.9 MB | Persistent system properties |
+| `/systemrw` | `mmcblk0p65`, `systemrw` | 3.9 MB | Persistent system properties (`build.prop`), and network, Bluetooth and Wi-Fi files that change only at boot |
 | `/cache` | `mmcblk0p16`, `cache` | 58 MB | |
 | `/run`, `/var/volatile` | tmpfs | 897 MB | Cleared at every boot |
+
+### Writes and logs
+
+Measured with the add-on streaming, over its first 18.8 hours, before it kept the properties file in
+RAM ([device/storage](device/storage/README.md)). Everything here comes from the vendor's software.
+
+| Item | Finding |
+|---|---|
+| Flash writes | The LED controller, `altekflow`, sets `persist.flow.current.state` and `persist.flow.change.state` 113 times a minute, to the values they already hold, and each time the property service, `leprop-service`, rewrites `/systemrw/build.prop` (594 bytes) in place on the eMMC. That came to 5.4 MB of writes a minute: 5.6 GB in 18.8 hours, about 7 GB a day. Nothing else wrote to the eMMC in a steady state |
+| Flash wear | A Toshiba eMMC made in April 2018. Its own estimate (`life_time`): 10–20 % of its rated life used; spare blocks normal (`pre_eol_info` 1) |
+| System log | In RAM only (`/run/log/journal`), up to 64 MB (`RuntimeMaxUse`), and lost at every restart. The kernel logs about 44,000 lines an hour, almost all from the Wi-Fi driver (`hdd_validate_adapter` every 100 ms, and `unknown ioctl` for `wifimonitor`'s Wi-Fi checks), and `altekflow` writes about 7,400 lines of debug output an hour, so the journal held only the last 46 minutes or so. BusyBox `syslogd` keeps a copy in `/var/log/messages`, also in RAM, rotated at 200 KB |
+| Crash dumps | `kernel.core_pattern` writes a full memory dump of each crashed program to `/var/tmp`, in RAM, where it stays until the next restart. A vendor test program started at boot, `http_interface_gtest`, crashed at both boots checked; the first time, it left a 43 MB dump |
+| Login records | `/var/log/wtmp` and `/var/log/btmp`, in RAM, grow with each SSH sign-in and each failed attempt until the next restart |
+| `/data` | Doesn't grow by itself: only the add-on's settings and the camera's exposure warm-start file (`/data/misc/camera/aecWarmStartCamera_0.txt`) changed. Docker's images take 1.3 GB and stay put. The boot script's log, `/data/misc/wifi/docker_boot`, gains a few lines at each boot |
 
 ## How the stock camera worked
 
@@ -150,6 +164,9 @@ Trade-offs:
   The add-on survives it and starts again in setup mode.
 - **Heat.** `altekflow` powers the camera off when its battery overheats. Keep the camera out of
   direct sun and ventilated.
+- **Flash wear.** The eMMC is soldered to the board, and was already partly worn when found
+  ([writes and logs](#writes-and-logs)). The add-on keeps the vendor's busiest writer off it, and the
+  setup page shows the chip's own wear estimate.
 - **One firmware, one camera.** Everything was tested on one camera, on v0.5370_Perf. The installer
   refuses other firmware unless forced.
 - **Recovery.** Uninstalling restores the vendor software and setup. Reflashing Altek's v0.5370_Perf

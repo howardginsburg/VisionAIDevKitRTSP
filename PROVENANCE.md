@@ -29,6 +29,7 @@ Every piece of the add-on is one of three kinds:
 - [How it was tested](#how-it-was-tested)
 - [Status lights](#status-lights)
 - [Restart after a crash](#restart-after-a-crash)
+- [Storage and flash wear](#storage-and-flash-wear)
 - [Setup page and admin account](#setup-page-and-admin-account)
 - [Installing over USB](#installing-over-usb)
 - [Where every component comes from](#where-every-component-comes-from)
@@ -450,6 +451,50 @@ Tested on the camera, on its 1.5 A charger unless stated:
 Not tested: the camera starting by itself when a charger is plugged in after the battery has run
 flat.
 
+## Storage and flash wear
+
+**Files**: `device/storage/`. Authored.
+
+**In the way.** The camera's own software writes where it shouldn't
+([ASSESSMENT.md](ASSESSMENT.md#writes-and-logs)):
+- The LED controller, `altekflow`, has the property service, `leprop-service`, rewrite a file on the
+  flash about twice a second, with nothing in it changing. The flash chip is soldered to the board.
+- Each crash leaves a full memory dump in RAM until the next restart, and a vendor test program
+  crashes as the camera boots.
+
+The writer was found from the eMMC's write counters for each partition
+(`/sys/block/mmcblk0/mmcblk0p65/stat`): every steady write went to `systemrw`, whose only changing
+file was `build.prop`. Its inode stayed the same while its content was rewritten, so it is rewritten
+in place. `/proc/<pid>/io` showed `altekflow` and `leprop-service` each writing about 1 KB a second,
+and `altekflow`'s strings name the two properties, its states, and an `adb` hook for changing state.
+
+**What the add-on does.** `storage.sh` binds a copy of the file, in RAM, over it while the camera
+runs, and writes the copy back to the flash only when it has changed: every 10 minutes, and at
+shutdown. It also has the kernel hand each crash to it instead of writing a dump, records the crash,
+and trims the logs in RAM ([device/storage/README.md](device/storage/README.md)).
+
+| Option | Outcome |
+|---|---|
+| Stop `altekflow` setting the properties | Not possible: it is a closed program, and the same loop drives the lights, the power button and the battery protection |
+| A stand-in for `setprop` on `altekflow`'s `PATH`, as for `docker` | Doesn't apply: `altekflow` sets properties through the property service's library, not the command |
+| A RAM file system over all of `/systemrw` | Not needed: nothing else there changes after the boot, and the vendor binds several of its files into `/etc` before the add-on starts |
+| **A copy in RAM, bound over the file, saved when it changes** | Chosen: the vendor's software runs unchanged and finds the same file at the same paths |
+
+Tested on the camera, streaming to Frigate:
+
+| Test | Result |
+|---|---|
+| The flash's write counters, for 30 s before the service started, then for a minute twice with it running | `systemrw`: 2,548 KB in the 30 s before, then 0 KB in the minute after. In a later minute: 0 KB on the whole flash |
+| The file with the service running | `/systemrw/build.prop`, both `/etc/build.prop` mounts and `/run/vaidk/build.prop` were one file, with the vendor's owner and SELinux label. `altekflow` and `leprop-service` carried on, writing into RAM |
+| A line added to the file on flash, then `storage.sh cleanup` | The copy was written over it in place (the same inode); a second cleanup wrote nothing |
+| `systemctl stop vaidk-storage`, then `start` | Stopped: the vendor's two binds of the file on flash, and the vendor's `core_pattern`, as before. Started: back in RAM |
+| A shell killed with `SIGSEGV` | Recorded in `/run/vaidk/crashes` and in the journal; no dump in `/var/tmp` |
+| The dump the vendor's test program had left at boot | Deleted by the first cleanup, and recorded as that program's crash |
+| A restart, with a line added to the file on flash just before | Read back from a log that a temporary drop-in had the service's stop write to `/data`: 7 s into the shutdown, the service had saved the copy over the line, given back the vendor's binds and put back the vendor's `core_pattern`. At boot it recorded crashes from 10.8 s; the vendor's test program crashed at 20.4 s and was recorded without a dump; the file moved to RAM at 25.0 s, after the `/etc` overlay (24.2 s) |
+| The flash's write counters after that restart | `systemrw`: 816 KB by 89 s into the boot, then 0 KB. The whole flash, over 10 minutes half an hour after the boot: 160 KB, all on `/data`, or about 23 MB a day |
+
+Not tested: a power cut, which loses the property changes since the last save.
+
 ## Setup page and admin account
 
 **Files**: `device/web/`. Authored. Served by the camera's own BusyBox `httpd`.
@@ -501,6 +546,25 @@ Tested on the camera, with the streams running:
 | Signing in as `vaidktest` from a PC | SSH with its password, then `sudo` to root. The setup page accepted it and refused the previous admin account |
 | Adopting the vendor setup's account again (`ui.sh adopt-admin`) | `vaidktest` deleted, with its home directory and `AllowUsers` entry, and its SSH and page sign-ins refused. The adopted account signed in to both |
 
+### The System section
+
+**In the way.** The camera has no monitoring tools to show its health on a web page, and the page is
+a shell script.
+
+**What the add-on does.** `ui.sh` reads the kernel's own counters twice, one second apart, and works
+out the rates in one `awk` pass ([what each line shows](device/web/README.md#the-system-section)).
+Program names in `/proc/<pid>/stat` may contain spaces and brackets, so it splits each line at the
+last `)`.
+
+Tested on the camera, streaming to Frigate:
+
+| Test | Result |
+|---|---|
+| The settings page's load time | 1.9 s on the camera and about 2.2 s over Wi-Fi, against about 0.9 s before; the one-second measurement is most of the difference |
+| The figures against the camera's own sources | The processor 36 to 38 % busy, with `qmmf-server` at 80 to 88 % of one core and `rtspd.py` at 10 to 11 %, as earlier readings of `/proc` showed. Memory, storage, flash wear, power and the Wi-Fi link matched `/proc/meminfo`, `df`, the eMMC's files, the power supply's files and `iw` |
+| Stream viewers | Frigate's server, on both streams |
+| Layout | A phone screen 390 pixels wide and a desktop window, light and dark: every value wrapped within its column |
+
 ## Installing over USB
 
 **Files**: `install.ps1`, `install.sh`, `device/install-device.sh`. Authored.
@@ -537,6 +601,7 @@ The camera's own software. None of it is committed to this repository.
 | `libqmmf_recorder_client.so`, `libqmmf_player_client.so`, `libcamera_client.so.0`, `libcamera_metadata.so.0` | Copied by `build.ps1` to the build cache on your PC (`%LOCALAPPDATA%\vaidk-build`), only to link against | `vaidk-camd` calls `qmmf-server`'s recorder and player, and reads and writes the camera's request settings, through them |
 | `qmmf-server`, the camera and audio HALs, the sensor driver, the DSP firmware | Used in place | The camera, the encoders, the microphones and the speaker |
 | `altekflow`, `wifimonitor` | Used in place | The lights, the power button, the battery protection |
+| `leprop-service`, and the saved properties file, `/systemrw/build.prop` | Used in place. While the add-on runs, the file is a copy in RAM, saved back when it changes | The vendor's programs keep their saved properties there |
 | `wpa_supplicant`, `udhcpc`, `startvirtualsoftap`, `hostapd`, `dnsmasq` | Used in place | Wi-Fi and the setup network |
 | The setup network's password, `/persist/data/wifi.bin` | Read in place | The setup network keeps the password on the sticker |
 | BusyBox (`sh`, `httpd`), Python 3.5, `tinymix`, `iptables`, `sshd`, `adbd` | Used in place | What the add-on runs on |
