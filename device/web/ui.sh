@@ -97,8 +97,9 @@ forget() {
     rm -f "$RUN_DIR/scan" "$RUN_DIR/wifi-try" "$RUN_DIR/wifi-try-ssid"
     # The ONVIF service keeps its presets in memory too; a restart drops them and shows the whole picture.
     systemctl try-restart vaidk-onvif.service 2>/dev/null
-    # With the settings gone, detection is off: the detector puts the vendor's files back and stops.
-    systemctl try-restart vaidk-detect.service 2>/dev/null
+    # With the settings gone, detection is off: the detector puts the vendor's files back and stops; so does
+    # the MQTT service.
+    systemctl try-restart vaidk-detect.service vaidk-mqtt.service 2>/dev/null
     write_httpd_conf
 }
 
@@ -221,6 +222,7 @@ show_message() {
         detect) text="Saved. Detection uses the new settings within a few seconds." ;;
         detect-restart) text="Saved. The streams restart in about 15 seconds; object detection starts a few seconds later." ;;
         detect-sub) text="Saved. Object detection works from the sub stream at 640x360, so it is set to that now: update the detect size in Frigate (see the Frigate section). The streams restart in about 15 seconds." ;;
+        mqtt) text="Saved. The MQTT service connects with the new settings in a few seconds." ;;
         err-token) err="The page expired. Please try again." ;;
         err-ssid) err="Choose or type a Wi-Fi network name." ;;
         err-wifi-pass) err="Wi-Fi passwords have 8 to 63 characters. Leave it empty only for an open network." ;;
@@ -237,6 +239,11 @@ show_message() {
         err-ptz-full) err="The camera keeps up to 16 presets. Delete one first." ;;
         err-reset) err="Tick the box to confirm the reset." ;;
         err-detect-objects) err="Choose at least one object to detect." ;;
+        err-mqtt-host) err="Type the broker's name or address: letters, digits, dots and dashes." ;;
+        err-mqtt-port) err="The broker's port is a number from 1 to 65535." ;;
+        err-mqtt-user) err="MQTT user names use letters, digits and . _ @ + - (up to 64)." ;;
+        err-mqtt-pass) err="The MQTT password can have up to 128 characters, without control characters." ;;
+        err-mqtt-topic) err="Topics use letters, digits, dots, dashes and underscores, with / between levels (up to 64 characters, no + or #)." ;;
         *) return 0 ;;
     esac
     if [ -n "$text" ]; then printf '<p class="note">%s</p>' "$text"; else printf '<p class="error">%s</p>' "$err"; fi
@@ -340,6 +347,8 @@ post_device() {
         save_account "$user" "$pass" "$(field admin_pass2)"
     fi
     set_setting NAME "$name"
+    # The MQTT topic and Home Assistant's device are named after the camera.
+    if [ "$name" != "$NAME" ]; then later "systemctl try-restart vaidk-mqtt.service"; fi
     redirect "$SELF?msg=device"
 }
 
@@ -443,9 +452,10 @@ post_detect() {
     fi
     set_setting DETECT "$detect"; set_setting DETECT_OBJECTS "$objects"; set_setting DETECT_CONFIDENCE "$conf"
     set_setting DETECT_FPS "$fps"; set_setting DETECT_BOXES "$boxes"
-    # reset-failed: after repeated errors systemd won't start the detector again until told to.
+    # reset-failed: after repeated errors systemd won't start the detector again until told to. The MQTT
+    # service follows detection, and publishes the chosen objects.
     if [ $msg != detect ]; then
-        later "systemctl reset-failed vaidk-detect.service; systemctl restart vaidk-detect.service vaidk-camera.service"
+        later "systemctl reset-failed vaidk-detect.service; systemctl restart vaidk-detect.service vaidk-camera.service vaidk-mqtt.service"
         redirect "$SELF?msg=$msg"
     fi
     # The detector restarts for new objects or confidence, and when it isn't running (saving tries again).
@@ -453,8 +463,35 @@ post_detect() {
         ! systemctl -q is-active vaidk-detect.service; }; then
         later "systemctl reset-failed vaidk-detect.service; systemctl restart vaidk-detect.service"
     fi
+    if [ "$objects" != "$DETECT_OBJECTS" ]; then later "systemctl try-restart vaidk-mqtt.service"; fi
     sh "$VAIDK_DIR/camera/camd.sh" reload
     redirect "$SELF?msg=detect"
+}
+
+# MQTT (mqtt/mqttd.py): saving restarts the service, which connects again. The password is kept apart
+# from the settings, in a file only root can read.
+post_mqtt() {
+    mqtt=$(field mqtt); host=$(field mqtt_host); port=$(field mqtt_port); user=$(field mqtt_user)
+    pass=$(field mqtt_pass); topic=$(field mqtt_topic)
+    if [ "$(field mqtt_discovery)" = 1 ]; then discovery=1; else discovery=0; fi
+    allowed "$mqtt" "$MQTT" "0 1" || fail err-camera
+    if [ -n "$host" ] || [ "$mqtt" = 1 ]; then
+        matches "$host" '[A-Za-z0-9][A-Za-z0-9.-]{0,252}' || fail err-mqtt-host
+    fi
+    case "$port" in ''|*[!0-9]*|0*|??????*) fail err-mqtt-port ;; esac
+    [ "$port" -le 65535 ] || fail err-mqtt-port
+    if [ -n "$user" ]; then matches "$user" '[A-Za-z0-9._@+-]{1,64}' || fail err-mqtt-user; fi
+    if [ -n "$pass" ] && { [ ${#pass} -gt 128 ] || has_ctrl "$pass"; }; then fail err-mqtt-pass; fi
+    if [ -n "$topic" ]; then
+        matches "$topic" '[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*' && [ ${#topic} -le 64 ] || fail err-mqtt-topic
+    fi
+    set_setting MQTT "$mqtt"; set_setting MQTT_HOST "$host"; set_setting MQTT_PORT "$port"
+    set_setting MQTT_USER "$user"; set_setting MQTT_TOPIC "$topic"; set_setting MQTT_DISCOVERY "$discovery"
+    # Blank keeps the saved password; without a user name there is none.
+    if [ -z "$user" ]; then rm -f "$DATA_DIR/mqtt-password"
+    elif [ -n "$pass" ]; then (umask 077 && printf '%s' "$pass" > "$DATA_DIR/mqtt-password"); fi
+    later "systemctl restart vaidk-mqtt.service"
+    redirect "$SELF?msg=mqtt"
 }
 
 handle_post() {
@@ -471,6 +508,7 @@ handle_post() {
         onvif) post_onvif ;;
         ptz) post_ptz ;;
         detect) post_detect ;;
+        mqtt) post_mqtt ;;
         device) post_device ;;
         restart-streams) restart_streams; redirect "$SELF?msg=restart" ;;
         reboot)
@@ -556,6 +594,7 @@ status_section() {
     if [ "$ONVIF" = 1 ]; then item "Pan, tilt and zoom" "On, ONVIF port $ONVIF_PORT"; else item "Pan, tilt and zoom" "Off"; fi
     if [ "$DETECT" = 1 ] && [ "$(detect_value status)" = running ]; then item "Object detection" "On, in view: $(in_view)"
     else item "Object detection" "$(detect_status)"; fi
+    item "MQTT" "$(mqtt_status)"
     printf '</dl></section>'
 }
 
@@ -621,6 +660,7 @@ prog_label() { # prog_label PID NAME: how the busiest-programs list shows a prog
             case "$(tr '\0' ' ' 2>/dev/null < "/proc/$1/cmdline")" in
                 *rtspd.py*) echo "rtspd.py (RTSP)" ;;
                 *onvifd.py*) echo "onvifd.py (PTZ)" ;;
+                *mqttd.py*) echo "mqttd.py (MQTT)" ;;
                 *) echo "$2" ;;
             esac ;;
         qmmf-server) echo "qmmf-server (camera)" ;;
@@ -1021,6 +1061,43 @@ detect_section() {
     printf '<button>Save</button></form></section>'
 }
 
+# ----- MQTT section -----
+
+mqtt_value() { sed -n "s/^$1=//p" "$RUN_DIR/mqtt.state" 2>/dev/null | head -n 1; } # mqtt_value KEY
+
+mqtt_status() { # one line: what the MQTT service is doing
+    if [ "$MQTT" != 1 ]; then echo "Off"; return; fi
+    if [ -z "$MQTT_HOST" ]; then echo "On, but no broker is set"; return; fi
+    if [ "$DETECT" != 1 ]; then echo "Waiting for object detection to be turned on"; return; fi
+    if ! systemctl -q is-active vaidk-mqtt.service; then echo "Not running"; return; fi
+    case "$(mqtt_value status)" in
+        connected) echo "Connected to $MQTT_HOST:$MQTT_PORT; $(mqtt_value published) messages sent" ;;
+        error) echo "Can't publish: $(mqtt_value error). Trying again." ;;
+        *) echo "Connecting to $MQTT_HOST:$MQTT_PORT" ;;
+    esac
+}
+
+mqtt_section() {
+    printf '<section id="mqtt"><h2>MQTT</h2>'
+    if [ "$MQTT" = 1 ]; then printf '<dl>'; item "Status" "$(mqtt_status)"; printf '</dl>'; fi
+    form_start mqtt
+    printf '<label>MQTT <select name="mqtt">'
+    options "$MQTT" 1 "On" 0 "Off"
+    printf '</select></label>'
+    printf '<label>Broker <input name="mqtt_host" value="%s" maxlength="253" placeholder="192.168.1.10 or homeassistant.local" autocapitalize="none" autocomplete="off"></label>' "$(h "$MQTT_HOST")"
+    printf '<label>Port <input name="mqtt_port" value="%s" maxlength="5" inputmode="numeric"></label>' "$(h "$MQTT_PORT")"
+    printf '<label>User name (blank for none) <input name="mqtt_user" value="%s" maxlength="64" autocapitalize="none" autocomplete="off"></label>' "$(h "$MQTT_USER")"
+    if [ -s "$DATA_DIR/mqtt-password" ]; then ph="Saved; blank keeps it"; else ph=""; fi
+    printf '<label>Password <input name="mqtt_pass" type="password" maxlength="128" placeholder="%s" autocomplete="new-password"></label>' "$ph"
+    printf '<label>Topic <input name="mqtt_topic" value="%s" maxlength="64" placeholder="vaidk/%s" autocapitalize="none" autocomplete="off"></label>' "$(h "$MQTT_TOPIC")" "$(h "$NAME")"
+    printf '<label class="check"><input type="checkbox" name="mqtt_discovery" value="1"%s> Add a sensor for each object to Home Assistant (MQTT discovery)</label>' \
+        "$([ "$MQTT_DISCOVERY" = 1 ] && echo ' checked')"
+    topic=$(h "${MQTT_TOPIC:-vaidk/$NAME}")
+    printf '<p class="hint">Publishes what object detection sees, so it needs detection on: <code>%s/status</code> (online or offline), and for each chosen object <code>%s/person</code> (ON or OFF) and <code>%s/person/count</code>, all retained, and <code>%s/detections</code> (JSON) after each analysis while something is in view. Plain MQTT 3.1.1, without TLS: the password and the messages cross your network unencrypted.</p>' \
+        "$topic" "$topic" "$topic" "$topic"
+    printf '<button>Save</button></form></section>'
+}
+
 wifi_section() {
     printf '<section id="wifi"><h2>Wi-Fi</h2>'
     if [ "$MODE" = lan ]; then
@@ -1124,6 +1201,7 @@ settings_page() {
     talk_section
     ptz_section
     detect_section
+    mqtt_section
     wifi_section
     device_section
     frigate_section

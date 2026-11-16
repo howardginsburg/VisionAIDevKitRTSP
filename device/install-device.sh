@@ -12,7 +12,7 @@ DATA_DIR=/data/misc/vaidk
 UNIT_DIR=/lib/systemd/system
 VENDOR_BOOT=/vendor/etc/camera/InitCamx
 # Each component's systemd unit, relative to /opt/vaidk.
-UNITS="camera/vaidk-camera.service rtsp/vaidk-rtsp.service wifi/vaidk-wifi.service web/vaidk-web.service onvif/vaidk-onvif.service recovery/vaidk-recovery.service storage/vaidk-storage.service detect/vaidk-detect.service"
+UNITS="camera/vaidk-camera.service rtsp/vaidk-rtsp.service wifi/vaidk-wifi.service web/vaidk-web.service onvif/vaidk-onvif.service recovery/vaidk-recovery.service storage/vaidk-storage.service detect/vaidk-detect.service mqtt/vaidk-mqtt.service"
 # The compiled programs, relative to /opt/vaidk.
 PROGRAMS="camera/vaidk-camd detect/vaidk-detect"
 
@@ -57,6 +57,7 @@ install_addon() {
     for script in "$new"/*.sh "$new"/*/*.sh "$new"/web/www/cgi-bin/*.cgi "$new/lights/docker"; do sh -n "$script"; done
     python3 -c "compile(open('$new/rtsp/rtspd.py').read(), 'rtspd.py', 'exec')"
     python3 -c "compile(open('$new/onvif/onvifd.py').read(), 'onvifd.py', 'exec')"
+    python3 -c "compile(open('$new/mqtt/mqttd.py').read(), 'mqttd.py', 'exec')"
     for program in $PROGRAMS; do
         [ "$(dd if="$new/$program" bs=1 skip=1 count=3 2>/dev/null)" = ELF ] \
             || die "$program is damaged (was it copied as text?)"

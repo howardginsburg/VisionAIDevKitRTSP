@@ -26,7 +26,7 @@ boots, and how the add-on is installed, set up and removed.
 %%{init: {"flowchart": {"wrappingWidth": 420}}}%%
 flowchart TB
     you["You<br/>Frigate, Home Assistant, VLC or another RTSP player · a browser<br/>the installers over USB · SSH, optional"]
-    addon["The add-on, in /opt/vaidk<br/>camera program · RTSP server · ONVIF service · object detector<br/>Wi-Fi watchdog · setup page · boot script · status-light stand-in<br/>crash recovery · storage upkeep"]
+    addon["The add-on, in /opt/vaidk<br/>camera program · RTSP server · ONVIF service · object detector<br/>MQTT client · Wi-Fi watchdog · setup page · boot script<br/>status-light stand-in · crash recovery · storage upkeep"]
     vendor["The camera's own software, kept<br/>qmmf-server with the camera and audio HALs<br/>video analytics and SNPE · altekflow · Wi-Fi tools · sshd · adbd"]
     fw["Qualcomm firmware and Linux 4.9, unchanged<br/>32-bit, read-only root file system"]
     hw["Vision AI DevKit<br/>Qualcomm QCS603 · 8 MP Sony IMX334 sensor<br/>microphones · speaker · Wi-Fi · three lights · power button"]
@@ -59,7 +59,7 @@ flowchart TB
   few things around them: its own copy of the boot script runs instead of the vendor's, the vendor
   preview server is disabled, `qmmf-server` gets a time zone, the detector's configuration takes the
   vendor's place while detection is on, and the admin account is an ordinary Linux user.
-- **The add-on.** Eight systemd services and the boot script, in `/opt/vaidk`. Your settings are in
+- **The add-on.** Nine systemd services and the boot script, in `/opt/vaidk`. Your settings are in
   `/data/misc/vaidk`.
 - **You.** RTSP players and NVRs, a browser for the setup page, the installers over USB, and SSH if
   you want it.
@@ -73,6 +73,7 @@ flowchart TB
 | RTSP server | `vaidk-rtsp.service` | `rtspd.py`: the main stream with audio and the talk-back channel on port 8900, the sub stream on port 8901 | [device/rtsp](device/rtsp/README.md) |
 | Pan, tilt and zoom | `vaidk-onvif.service` | `onvifd.py`: the ONVIF service on port 8080, through which Frigate and Home Assistant find the streams and move the digital view; keeps the view and presets | [device/onvif](device/onvif/README.md) |
 | Object detection | `vaidk-detect.service` | `vaidk-detect` runs the camera's own detector (Qualcomm's video analytics manager and the vendor's model, on the DSP) on frames from `vaidk-camd`, sends back boxes for the main stream, and reports what it sees. Off by default | [device/detect](device/detect/README.md), [camd](camd/README.md#object-detection) |
+| MQTT | `vaidk-mqtt.service` | `mqttd.py` publishes what the detector sees to your MQTT broker, and announces sensors to Home Assistant if you want. Off by default | [device/mqtt](device/mqtt/README.md) |
 | Wi-Fi | `vaidk-wifi.service` | Keeps Wi-Fi connected, opens the setup network when it can't, joins new networks | [device/wifi](device/wifi/README.md) |
 | Setup page | `vaidk-web.service` | First-time setup and settings, on port 80 | [device/web](device/web/README.md) |
 | Crash recovery | `vaidk-recovery.service` | `recovery.sh`, once at boot: turns off Qualcomm's crash-dump mode and has the kernel restart the camera after a crash | [device/recovery](device/recovery/README.md) |
@@ -209,12 +210,14 @@ flowchart LR
     detect -- "boxes" --> camd
     camd -- "bounding-box overlays<br/>on the main stream" --> qmmf
     detect -- "detect.state, detect.recent" --> page["Setup page"]
+    detect -- "what changes<br/>/run/vaidk/events.sock" --> mqttd["mqttd.py"]
+    mqttd -- "MQTT 3.1.1" --> broker["Your MQTT broker<br/>Home Assistant"]
     classDef use fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
     classDef mod fill:#dae8fc,stroke:#6c8ebf,color:#1a1a1a
     classDef os fill:#fff2cc,stroke:#d6b656,color:#1a1a1a
     classDef hard fill:#f5f5f5,stroke:#666666,color:#1a1a1a
-    class page use
-    class camd,detect mod
+    class page,broker use
+    class camd,detect,mqttd mod
     class qmmf,vam os
     class dsp hard
 ```
@@ -232,6 +235,9 @@ flowchart LR
   detection is on, VAM finds it, and the add-on's engine configuration, through links in the vendor's
   `/data/misc/camera` ([how detection starts](device/detect/README.md)).
 - **Nothing written to flash** while it runs: VAM's database and the engine configuration are in RAM.
+- **MQTT.** The detector sends what changes, and each result while something is in view, as
+  datagrams to `mqttd.py`, which publishes them; it never waits for it. When the detector starts again
+  or stops, `mqttd.py` publishes what was in view as gone ([topics](device/mqtt/README.md#topics)).
 
 ### Status and lights
 
@@ -273,6 +279,8 @@ flowchart LR
 | `detect.sock` | `vaidk-detect`, which listens on it | `vaidk-camd` connects, sends frames and receives boxes ([object detection](camd/README.md#object-detection)) |
 | `detect.state`, `detect.recent` | `vaidk-detect`, every second and on each change; `detect.sh`, while it prepares or when detection can't start | The setup page ([fields](device/detect/README.md#status)) |
 | `detect/` (a folder) | `detect.sh`: the engine configuration, and `vam/`, a 4 MB RAM file system for VAM's database | VAM, in `vaidk-detect`, through links in `/data/misc/camera` and `/data/misc/vam` |
+| `events.sock` | `mqttd.py`, which binds it | `vaidk-detect` sends it what it sees ([events](device/mqtt/README.md#how-events-arrive)) |
+| `mqtt.state` | `mqttd.py`, when its state changes and every 10 s | The setup page |
 | `rtsp.status` | `rtspd.py`, every second | The setup page; you ([fields](device/rtsp/README.md#status)) |
 | `streaming` | `rtspd.py`, while every enabled stream flows | The light stand-in, the setup page, `ui.sh info` |
 | `boot-wifi-done` | The boot script, after its Wi-Fi step | The Wi-Fi watchdog, which waits for it; `ui.sh info` |
@@ -300,16 +308,18 @@ flowchart LR
     load --> ui["ui.sh"]
     load --> onvif["onvif.sh"]
     load --> detsh["detect.sh"]
+    load --> mqttsh["mqtt.sh"]
     camd -- "settings at start<br/>live ones on SIGHUP" --> prog["vaidk-camd"]
     camd -- "camd.sh tz: drop-in" --> qmmf["qmmf-server<br/>time zone"]
     detsh -- "settings at start" --> det["vaidk-detect"]
+    mqttsh -- "settings at start" --> mq["mqttd.py"]
     classDef use fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
     classDef data fill:#e1d5e7,stroke:#9673a6,color:#1a1a1a
     classDef mod fill:#dae8fc,stroke:#6c8ebf,color:#1a1a1a
     classDef os fill:#fff2cc,stroke:#d6b656,color:#1a1a1a
     class page,hand use
     class defaults,conf data
-    class load,camd,wifi,net,ui,onvif,detsh,prog,det mod
+    class load,camd,wifi,net,ui,onvif,detsh,mqttsh,prog,det,mq mod
     class qmmf os
 ```
 
@@ -344,6 +354,7 @@ flowchart LR
 | `DETECT` | `camd.sh`, which passes it to `vaidk-camd`; `detect.sh` | When the camera service and the detector restart. Turning detection on or off on the setup page restarts both |
 | `DETECT_OBJECTS`, `DETECT_CONFIDENCE` | `detect.sh`, which passes them to `vaidk-detect` and writes the confidence into VAM's configuration | When `vaidk-detect` restarts. Saving **Object detection** restarts it when they changed |
 | `DETECT_FPS`, `DETECT_BOXES` | `camd.sh`, which writes them to `/run/vaidk/camd.conf` for `vaidk-camd` | At once: saving **Object detection** runs `camd.sh reload` |
+| `MQTT`, `MQTT_HOST`, `MQTT_PORT`, `MQTT_USER`, `MQTT_TOPIC`, `MQTT_DISCOVERY` | `mqtt.sh`, which passes them to `mqttd.py` | When `vaidk-mqtt` restarts. Saving **MQTT**, turning detection on or off, changing its objects or renaming the camera restarts it |
 | `RESTART_ON_CRASH` | `recovery.sh` | At the next boot, or when `vaidk-recovery` restarts |
 
 Besides the settings, the add-on keeps:
@@ -354,14 +365,15 @@ Besides the settings, the add-on keeps:
 | `/data/misc/vaidk/admin` | Which user is the admin account, and whether the add-on created or adopted it | `ui.sh` |
 | `/data/misc/vaidk/ptz` | The pan, tilt and zoom position, home position and presets | `onvifd.py` |
 | `/data/misc/vaidk/models/builtin` | The object detector's model and labels (27 MB), copied from the vendor's vision sample the first time detection starts | `detect.sh` |
+| `/data/misc/vaidk/mqtt-password`, `/data/misc/vaidk/mqtt-discovery` | The MQTT broker's password, readable only by root; what was announced to Home Assistant, so it can be removed | `ui.sh`; `mqttd.py`, only when that changes |
 | `/data/misc/camera`, `/data/misc/vam` (the vendor's) | While detection is on: the vendor's engine configuration set aside as `va-snpe-engine-library_config.json.vendor`, and links to the add-on's configuration, model, labels and VAM database folder. Put back when detection is turned off, and at uninstall | `detect.sh` |
 | `/etc/passwd`, `/etc/shadow`, `/etc/ssh/sshd_config` | The admin account itself, and its `AllowUsers` entry if `sshd` has that list. `/etc` is the vendor's overlay on `/data` | `useradd` and `chpasswd`, run by `ui.sh` |
 | `/etc/systemd/system/sockets.target.wants/sshd.socket` | SSH at boot. The image has this link already; it is written again only if SSH had been turned off, for example by the vendor setup | `systemctl enable`, run by `ui.sh` |
 | `/systemrw/build.prop` | The vendor's saved properties. While the add-on runs, programs use a copy in RAM ([run-time files](#run-time-files)) | `storage.sh`, which writes the copy back when it has changed: every 10 minutes, and when it stops |
 
 `ui.sh forget` deletes all of `/data/misc/vaidk`, and the admin account if the add-on created it,
-then restarts the ONVIF service so it forgets the presets it holds, and the object detector, which
-finds detection off and puts the vendor's files back.
+then restarts the ONVIF service so it forgets the presets it holds, and the object detector and the
+MQTT service, which find detection off: the detector puts the vendor's files back.
 **Reset camera** on the setup page, a new install and an uninstall all run it.
 
 ## Boot
@@ -384,6 +396,7 @@ flowchart TB
     svc --> recovery["vaidk-recovery<br/>restart after a crash"]
     svc --> storage["vaidk-storage<br/>records crashes at once"]
     svc --> det["vaidk-detect<br/>once /data is mounted; exits unless detection is on"]
+    svc --> mqtt["vaidk-mqtt<br/>exits unless MQTT and detection are on"]
     rest -- "/etc overlay, build.prop bound again" --> storage
     storage --> ram["build.prop in RAM<br/>cleanup every 10 minutes"]
     qmmf --> cam["vaidk-camera<br/>waits for the audio calibration, then vaidk-camd"]
@@ -394,7 +407,7 @@ flowchart TB
     classDef mod fill:#dae8fc,stroke:#6c8ebf,color:#1a1a1a
     classDef os fill:#fff2cc,stroke:#d6b656,color:#1a1a1a
     classDef use fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
-    class init,join,done,rtsp,web,watch,recovery,storage,ram,cam,onvif,det mod
+    class init,join,done,rtsp,web,watch,recovery,storage,ram,cam,onvif,det,mqtt mod
     class ap,rest,altek,svc,qmmf os
     class power,saved,streaming use
 ```
@@ -419,7 +432,7 @@ Where the add-on lives:
 | Location | File system | What |
 |---|---|---|
 | `/opt/vaidk` | The root, read-only (`mmcblk0p14`) | The add-on. It is on the root because `/data` is mounted `noexec`, so `vaidk-camd` couldn't run from there |
-| `/lib/systemd/system` | The root | The eight units, the boot script's drop-in in `InitCamx.service.d/`, and the time zone drop-in in `qmmf-server.service.d/` |
+| `/lib/systemd/system` | The root | The nine units, the boot script's drop-in in `InitCamx.service.d/`, and the time zone drop-in in `qmmf-server.service.d/` |
 | `/home/<admin>` | The root | The admin account's home directory, when the add-on created the account |
 | `/data/misc/vaidk` | `/data`, read-write | Your settings, Wi-Fi network, admin account record, the pan, tilt and zoom presets, and the object detector's model |
 | `/run/vaidk` | RAM | [Run-time files](#run-time-files) |
@@ -511,8 +524,9 @@ sequenceDiagram
 | 4000/tcp | `qmmf-webserver` | Rejected from the network (`LOCK_CONTROL_API`) |
 | 1080/tcp | `ipc-webserver`, disabled | Rejected from the network (`LOCK_CONTROL_API`) |
 
-Other vendor services listen only on the camera itself (127.0.0.1). ADB is USB only. The security
-trade-offs are in the [README](README.md#security-notes).
+Other vendor services listen only on the camera itself (127.0.0.1). ADB is USB only. With MQTT on, the
+camera also connects out to your broker (port 1883 by default); it listens for nothing more. The
+security trade-offs are in the [README](README.md#security-notes).
 
 ## Repository layout
 
@@ -545,6 +559,7 @@ device/                      everything copied to /opt/vaidk on the camera; devi
   rtsp/                      rtspd.py, net.sh and the unit
   onvif/                     onvifd.py, onvif.sh and the unit
   detect/                    detect.sh, objects.txt, vaidk-detect (built from camd/) and the unit
+  mqtt/                      mqttd.py, mqtt.sh and the unit
   wifi/                      wifi.sh and the unit
   web/                       ui.sh, www/ (the setup page's files) and the unit
   recovery/                  recovery.sh and the unit

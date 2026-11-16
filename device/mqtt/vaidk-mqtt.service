@@ -1,0 +1,11 @@
+[Unit]
+Description=Vision AI DevKit MQTT service (object detection to your broker)
+After=network.target data.mount
+
+[Service]
+ExecStart=/bin/sh /opt/vaidk/mqtt/mqtt.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

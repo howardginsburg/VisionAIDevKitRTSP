@@ -76,11 +76,14 @@ page:
 | `analysed` | Frames analysed since then |
 | `rate`, `latency_ms` | Analyses a second over the last 10 s, and the average time per analysis over the last 50 |
 | `refused` | Frames VAM turned away |
-| `present` | What is in view now, with counts: `person 1,car 2` |
+| `present` | What is in view, with how many: `person 1,car 2`. A rise counts at once, a fall once the lower number has held for 3 s |
 | `seen` | A line per object seen since it started: `label\|Unix time\|confidence` |
 
 `/run/vaidk/detect.recent` holds the last 20 arrivals in view, newest first, as
 `Unix time|label|confidence`. An object counts as in view until 3 s after it was last seen.
+
+The detector also sends what changes, and each result while something is in view, to the
+[MQTT service](../mqtt/README.md) when that is running.
 
 ## Settings it uses
 

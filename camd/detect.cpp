@@ -7,8 +7,9 @@
 //
 // vaidk-camd connects to DETECT_SOCKET and sends a frame whenever the detector asks for one
 // (detect_link.h). The detector keeps the objects named in DETECT_OBJECTS that reach DETECT_CONFIDENCE
-// percent, sends their boxes back for the main stream, and writes what it sees to DETECT_STATE and
-// DETECT_RECENT. It exits when VAM won't start or stops answering, and systemd starts it again.
+// percent, sends their boxes back for the main stream, writes what it sees to DETECT_STATE and
+// DETECT_RECENT, and sends what changes to the MQTT service, as text datagrams to DETECT_EVENTS (see
+// device/mqtt/mqttd.py). It exits when VAM won't start or stops answering, and systemd starts it again.
 // The qmmf headers use memcpy/memset without including <cstring> themselves.
 #include <cstring>
 
@@ -223,7 +224,7 @@ std::string lower(std::string s) {
 }
 
 struct Settings {
-  std::string socket_path, state_path, recent_path, config_path;
+  std::string socket_path, state_path, recent_path, config_path, events_path;
   std::set<std::string> objects;  // empty: every label
   double confidence;              // percent
   uint32_t hold_s, debug;
@@ -235,6 +236,7 @@ Settings load_settings() {
   s.state_path = env_str("DETECT_STATE", "/run/vaidk/detect.state");
   s.recent_path = env_str("DETECT_RECENT", "/run/vaidk/detect.recent");
   s.config_path = env_str("DETECT_ENGINE_CONFIG", "/data/misc/camera/va-snpe-engine-library_config.json");
+  s.events_path = env_str("DETECT_EVENTS", "/run/vaidk/events.sock");
   // Comma-separated labels; an underscore stands for a space ("teddy_bear"), as the settings file
   // can't hold spaces.
   std::string list = env_str("DETECT_OBJECTS", "person");
@@ -332,7 +334,12 @@ uint16_t tenthousandths(double v) { return uint16_t(std::max(0.0, std::min(10000
 
 class Detector : public qmmf::vaminterface::VAMCb {
  public:
-  explicit Detector(const Settings &s) : s_(s), started_at_(time(nullptr)) {}
+  explicit Detector(const Settings &s) : s_(s), started_at_(time(nullptr)) {
+    // What the detector sees goes to the MQTT service as datagrams; nobody may be listening.
+    events_fd_ = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    events_addr_.sun_family = AF_UNIX;
+    strncpy(events_addr_.sun_path, s_.events_path.c_str(), sizeof(events_addr_.sun_path) - 1);
+  }
 
   bool load() {
     snpe_ = snpe_summary();
@@ -408,11 +415,14 @@ class Detector : public qmmf::vaminterface::VAMCb {
   void tick() {
     uint64_t now = now_us();
     bool changed = false, stuck = false;
+    std::string event;
     {
       std::lock_guard<std::mutex> lock(state_lock_);
       for (auto &e : seen_) {
         if (e.second.present && now - e.second.last_us > uint64_t(s_.hold_s) * 1000000u) {
           e.second.present = false;
+          e.second.held = 0;
+          state_line(event, e.first, 0);
           changed = true;
         }
       }
@@ -435,6 +445,7 @@ class Detector : public qmmf::vaminterface::VAMCb {
       exit_code_ = 4;
       return;
     }
+    emit(event);
     if (pending_clear_) {
       pending_clear_ = false;
       send_boxes({});
@@ -461,6 +472,7 @@ class Detector : public qmmf::vaminterface::VAMCb {
     }
     const Json &objects = root["objects"];
     std::vector<Found> kept;
+    std::string event;  // for the MQTT service (events_path): what changed, and this result's objects
     for (const Json &o : objects.items) {
       Found f;
       f.label = lower(trim(o["display_name"].str()));
@@ -507,6 +519,18 @@ class Detector : public qmmf::vaminterface::VAMCb {
         s.last_us = now;
         s.last_wall = wall;
         s.confidence = best[c.first];
+        // How many are in view: a rise counts at once, a fall once the lower count has held for the
+        // hold time, so one of two people missed now and then doesn't make the count flicker.
+        int held = s.held;
+        if (!s.present || c.second >= s.held) {
+          held = c.second;
+          s.held_us = now;
+        } else if (now - s.held_us > uint64_t(s_.hold_s) * 1000000u) {
+          held = c.second;
+          s.held_us = now;
+        }
+        if (!s.present || held != s.held) state_line(event, c.first, held);
+        s.held = held;
         if (!s.present) {
           s.present = true;
           char line[96];
@@ -517,7 +541,24 @@ class Detector : public qmmf::vaminterface::VAMCb {
         }
       }
       boxes_shown_ = !kept.empty();
+      // This result's objects while something is in view, then once more with none.
+      if (!kept.empty() || had_objects_) {
+        timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        char line[96];
+        snprintf(line, sizeof(line), "time %ld.%03ld\n", long(ts.tv_sec), long(ts.tv_nsec / 1000000));
+        std::string objects = line;
+        for (size_t i = 0; i < kept.size() && i < detect::kMaxBoxes; ++i) {
+          const Found &f = kept[i];
+          snprintf(line, sizeof(line), "object %s %.0f %u %u %u %u\n", underscored(f.label).c_str(), f.confidence,
+                   f.x, f.y, f.width, f.height);
+          objects += line;
+        }
+        event = objects + event;
+      }
+      had_objects_ = !kept.empty();
     }
+    emit(event);
     std::vector<detect::Box> boxes;
     for (const Found &f : kept) {
       if (boxes.size() >= detect::kMaxBoxes) break;
@@ -552,12 +593,29 @@ class Detector : public qmmf::vaminterface::VAMCb {
     bool busy = false;
   };
   struct Seen {
-    int now = 0;
+    int now = 0, held = 0;  // in this result; in view (held, see SendVAMMeta)
     bool present = false;
-    uint64_t last_us = 0;
+    uint64_t last_us = 0, held_us = 0;
     time_t last_wall = 0;
     double confidence = 0;
   };
+
+  static std::string underscored(std::string label) {
+    for (char &c : label)
+      if (c == ' ') c = '_';
+    return label;
+  }
+  static void state_line(std::string &event, const std::string &label, int count) {
+    event += "state " + underscored(label) + (count ? " ON " : " OFF ") + std::to_string(count) + "\n";
+  }
+
+  // Sends an event to the MQTT service, if it is listening; never waits.
+  void emit(const std::string &event) {
+    if (event.empty() || events_fd_ < 0) return;
+    ssize_t n = sendto(events_fd_, event.data(), event.size(), MSG_DONTWAIT | MSG_NOSIGNAL,
+                       reinterpret_cast<const sockaddr *>(&events_addr_), sizeof(events_addr_));
+    (void)n;
+  }
 
   bool fail(const std::string &why) {
     note("%s", why.c_str());
@@ -660,6 +718,7 @@ class Detector : public qmmf::vaminterface::VAMCb {
       status_ = "running";
       note("VAM started in %llu ms", static_cast<unsigned long long>((now_us() - t0) / 1000));
       write_state(true);
+      emit("reset\n");  // a new start: nothing is in view until VAM says so
     } else if (info.width != width_ || info.height != height_) {
       release(slot);
       note("the frame size changed to %ux%u; restarting", info.width, info.height);
@@ -744,7 +803,7 @@ class Detector : public qmmf::vaminterface::VAMCb {
       for (const auto &e : seen_) {
         if (!e.second.present) continue;
         if (!present.empty()) present += ",";
-        present += e.first + " " + std::to_string(e.second.now);
+        present += e.first + " " + std::to_string(e.second.held);
       }
       text += "present=" + present + "\n";
       for (const auto &e : seen_) {
@@ -793,13 +852,15 @@ class Detector : public qmmf::vaminterface::VAMCb {
   std::mutex send_lock_;
   int fd_ = -1;
   uint32_t send_failures_ = 0;
+  int events_fd_ = -1;
+  sockaddr_un events_addr_{};
 
   std::mutex state_lock_;
   std::map<uint64_t, uint64_t> queued_at_;
   std::map<std::string, Seen> seen_;
   std::deque<std::string> recent_;
   std::deque<uint64_t> result_times_, recent_latency_;
-  bool recent_changed_ = false, boxes_shown_ = false;
+  bool recent_changed_ = false, boxes_shown_ = false, had_objects_ = false;
   std::atomic<bool> pending_clear_{false};
   uint64_t results_ = 0, queued_ = 0, refused_ = 0, dropped_ = 0;
   uint64_t last_result_us_ = 0, last_queued_us_ = 0, last_returned_us_ = 0, last_state_us_ = 0, next_log_us_ = 0;

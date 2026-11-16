@@ -27,6 +27,7 @@ Every piece of the add-on is one of three kinds:
 - [Talk-back, picture and on-screen text](#talk-back-picture-and-on-screen-text)
 - [Pan, tilt and zoom](#pan-tilt-and-zoom)
 - [Object detection](#object-detection)
+- [MQTT](#mqtt)
 - [How it was tested](#how-it-was-tested)
 - [Status lights](#status-lights)
 - [Restart after a crash](#restart-after-a-crash)
@@ -383,6 +384,46 @@ Tested on the camera, streaming to Frigate:
 
 Not tested: a DSP crash, which should restart the DSP and the detector rather than the camera.
 
+## MQTT
+
+**Files**: `device/mqtt/` (`mqttd.py`, `mqtt.sh`, the unit), the events in `camd/detect.cpp`, and the
+**MQTT** section of `device/web/ui.sh`. Authored.
+
+**In the way.** The vision sample sent its results to Azure IoT Hub, which is gone. Nothing else on the
+camera publishes anywhere, and its Python 3.5.3 has no `socket`, `ssl`, `threading` or `json`
+modules, so MQTT libraries such as Paho don't run on it.
+
+**What the add-on does.** `mqttd.py`, a small MQTT 3.1.1 client on `_socket` and `select`, publishes
+what the detector sees, which the detector sends it as datagrams
+([device/mqtt/README.md](device/mqtt/README.md)).
+
+| Question | Options | Chosen |
+|---|---|---|
+| How to share what the camera sees | MQTT; ONVIF events (Home Assistant's ONVIF integration reads `tns1:RuleEngine/TPSmartEventDetector/TPSmartEvent` as Person, Vehicle and Pet Detection); Frigate's event API | MQTT: Home Assistant, Node-RED and most home-automation software speak it, and Home Assistant can find the sensors itself (discovery). ONVIF events are left for later; Frigate's API needs its admin sign-in and makes every event an alert |
+| A library | Paho; written for the camera | Written: the few packets a publisher needs |
+| How the detector reaches it | The status file; datagrams | Datagrams, the moment something changes; the status file only to notice a detector that stopped |
+| Delivery | QoS 0, 1 | 0: the state topics are retained and published again on every connection |
+| TLS | | None: the camera's Python has no `ssl` |
+| Counts | Each analysis's; held | Held: a rise at once, a fall after 3 s, so they don't flicker |
+| Home Assistant discovery | On; off | Available, off by default (your choice) |
+
+Tested on the camera, with a temporary broker (Aedes 1.2 on Node.js) on a PC, reached from the camera
+through an SSH tunnel to its own port 1883, with a person in view:
+
+| Test | Result |
+|---|---|
+| Connecting with a user name and password | Connected; `status` `online`, and each object's state and count, retained. 49 `detections` messages in 10 s, all valid JSON |
+| A wrong password | The broker refused it; the setup page showed "wrong user name or password"; attempts 5 and 10 s apart; connected once the right password was saved |
+| The service killed (`kill -9`) | The broker published the will, `offline`; systemd started it again 5 s later: `online`, and the state again |
+| The broker stopped, then a new one started | "the broker closed the connection" on the setup page; connected to the new broker at the next attempt, and published everything again |
+| The detector restarted (a new confidence), and stopped | `reset`: `person` `OFF` at once. With the detector stopped, `OFF` within a second |
+| Detection off, then on | The service stopped (`offline`), then connected again |
+| Discovery on; an object dropped; discovery off | 8 announcements, all valid; the dropped object's two removed; then the other six, and the record deleted |
+| Cost, at 5 analyses a second | 0.5% of a core, 6 MB of memory, nothing written to flash |
+
+Not tested: Home Assistant itself reading the announcements, as there was no broker on the network
+to test with; they follow Home Assistant's MQTT discovery format.
+
 ## How it was tested
 
 On the camera described in [ASSESSMENT.md](ASSESSMENT.md), on its Wi-Fi network, with `ffprobe` and
@@ -684,9 +725,9 @@ Each is fetched at a version pinned in one place, named in the third column.
 ### Authored
 
 Everything else: `install.ps1`, `install.sh`, `device/` (scripts, units, the setup page, the light
-stand-in, `defaults.conf`, `detect/objects.txt`, and `vaidk-camd` and `vaidk-detect` as built from
-`camd/`), the sources in `camd/` (`camd.cpp`, `image.cpp`, `talkback.cpp`, `detect.cpp`, their
-headers, `detect_link.h` and `common.h`), `camd/build.ps1`, `camd/android/`, and the documents.
+stand-in, `defaults.conf`, `detect/objects.txt`, the MQTT client, and `vaidk-camd` and `vaidk-detect`
+as built from `camd/`), the sources in `camd/` (`camd.cpp`, `image.cpp`, `talkback.cpp`, `detect.cpp`,
+their headers, `detect_link.h` and `common.h`), `camd/build.ps1`, `camd/android/`, and the documents.
 `camd/android/camera/CameraMetadata.h` declares only what `vaidk-camd` calls, with the names and
 layouts the camera libraries' exported symbols and Android 7's published API require; it was written
 for this project rather than copied from Android's sources. `detect/objects.txt` lists the objects in

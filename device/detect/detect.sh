@@ -138,6 +138,8 @@ cdsp_restart_level RELATED
 
 export DETECT_SOCKET="$RUN_DIR/detect.sock" DETECT_STATE="$RUN_DIR/detect.state" DETECT_RECENT="$RUN_DIR/detect.recent"
 export DETECT_ENGINE_CONFIG="$WORK/engine.json" DETECT_OBJECTS DETECT_CONFIDENCE="$conf"
+# What it sees also goes to the MQTT service (mqtt/mqttd.py), when that is running.
+export DETECT_EVENTS="$RUN_DIR/events.sock"
 # SNPE's DSP half (libsnpe_dsp_*_skel.so) is in /usr/lib, outside the DSP loader's default search path.
 export ADSP_LIBRARY_PATH="/usr/lib;/usr/lib/rfsa/adsp;/dsp"
 exec "$VAIDK_DIR/detect/vaidk-detect"

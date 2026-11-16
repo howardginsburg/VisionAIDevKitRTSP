@@ -15,12 +15,12 @@ account, IoT Hub or SSH is needed: you install it over USB and finish setup from
   camera's 4K picture, up to 4x, over ONVIF. Presets are saved on the setup page.
 - **Object detection on the camera (optional):** the detector the camera shipped with runs on its
   DSP and draws labelled boxes (`person 87%`) on the main stream; the setup page shows what is in
-  view.
+  view, and MQTT can publish it, with Home Assistant sensors if you want them.
 - **Picture and on-screen text:** anti-flicker, exposure, white balance, colour and sharpness
   change on the fly; the date, time and camera name can be burned into the video.
 - **Setup page:** first-time setup happens on the camera's own Wi-Fi network. Afterwards, open
   `http://<camera-ip>/` to change the streams, audio, picture, on-screen text, talk-back, pan, tilt
-  and zoom presets, object detection, Wi-Fi network, camera name or admin account.
+  and zoom presets, object detection, MQTT, Wi-Fi network, camera name or admin account.
 - **Recovers by itself:** if a stream stalls, the camera restarts its camera pipeline while players
   stay connected; if the camera crashes, it restarts; and if it can't reach its Wi-Fi network for 5
   minutes, it opens its setup network so you can pick another one.
@@ -288,6 +288,27 @@ on the camera's DSP. It is off until you turn it on in the setup page's **Object
 
 How it works: [device/detect/README.md](device/detect/README.md).
 
+### MQTT
+
+The setup page's **MQTT** section publishes what object detection sees to your MQTT broker (Home
+Assistant's Mosquitto add-on, for example). Turn it on, type the broker's address, and a user name and
+password if it needs them. It runs while object detection is on.
+
+| Topic, under `vaidk/<camera name>` | Payload |
+|---|---|
+| `status` | `online`, or `offline` when the camera stops publishing (retained) |
+| `person`, `car`, ... (each chosen object) | `ON` while it is in view, `OFF` 3 s after it was last seen (retained) |
+| `person/count`, ... | How many are in view (retained) |
+| `detections` | JSON after each analysis while something is in view: each object's label, confidence and position |
+
+- **Home Assistant:** tick **Add a sensor for each object to Home Assistant**, and a device named after
+  the camera appears in its MQTT integration, with an occupancy sensor and a count for each object.
+  Unticking it removes them.
+- **Topic:** change the prefix if you like (`vaidk/<camera name>` by default).
+- **No encryption:** plain MQTT, without TLS, like the streams. Use a broker on your own network.
+
+How it works: [device/mqtt/README.md](device/mqtt/README.md).
+
 ## Picture and on-screen text
 
 The setup page's **Picture** section changes the image while the streams keep running:
@@ -328,9 +349,9 @@ steady background noise, so a quiet room sounds nearly silent and voices come th
 ## Change settings
 
 Open `http://<camera-ip>/` and sign in with the admin account. The page shows the camera's status
-(Wi-Fi, address, stream health, microphone, talk-back, pan, tilt and zoom, object detection) and its
-health (processor, memory, storage, flash, temperatures, battery and power, Wi-Fi link, stream viewers
-and crashes; [details](device/web/README.md#the-system-section)), and lets you:
+(Wi-Fi, address, stream health, microphone, talk-back, pan, tilt and zoom, object detection, MQTT) and
+its health (processor, memory, storage, flash, temperatures, battery and power, Wi-Fi link, stream
+viewers and crashes; [details](device/web/README.md#the-system-section)), and lets you:
 
 - change the main and sub stream resolution, frame rate, bitrate and codec;
 - turn the microphone on or off and set its gain;
@@ -338,14 +359,15 @@ and crashes; [details](device/web/README.md#the-system-section)), and lets you:
 - turn talk-back on or off, set the speaker volume and test the speaker;
 - turn pan, tilt and zoom on or off, show the whole picture, and save, use or delete presets;
 - turn object detection on or off, and choose what it reports and how;
+- publish detections to an MQTT broker;
 - move the camera to another Wi-Fi network;
 - rename the camera and change the admin account;
 - restart the streams or the camera, or reset it.
 
-Picture, speaker volume, microphone muting, presets and object detection's settings apply straight
-away; the other changes restart the streams, except turning pan, tilt and zoom on or off, which
-restarts only that service. Settings the page doesn't show, such as the keyframe interval, the Wi-Fi
-fallback timers and restarting after a crash, can be changed by hand ([how](device/README.md#settings)).
+Picture, speaker volume, microphone muting, presets, object detection's settings and MQTT apply
+straight away; the other changes restart the streams, except turning pan, tilt and zoom on or off,
+which restarts only that service. Settings the page doesn't show, such as the keyframe interval, the
+Wi-Fi fallback timers and restarting after a crash, can be changed by hand ([how](device/README.md#settings)).
 
 ## Status lights
 
@@ -396,7 +418,7 @@ computer with `ssh-keygen -R <camera-ip>`.
 - **Status from USB:** `adb shell sh /opt/vaidk/web/ui.sh info`, for the streams
   `adb shell cat /run/vaidk/rtsp.status`, and for programs that crashed since the camera started
   `adb shell cat /run/vaidk/crashes`.
-- **Logs:** `adb shell journalctl -u vaidk-camera -u vaidk-rtsp -u vaidk-onvif -u vaidk-detect -u vaidk-wifi -u vaidk-web -u vaidk-recovery -u vaidk-storage --no-pager -n 50`.
+- **Logs:** `adb shell journalctl -u vaidk-camera -u vaidk-rtsp -u vaidk-onvif -u vaidk-detect -u vaidk-mqtt -u vaidk-wifi -u vaidk-web -u vaidk-recovery -u vaidk-storage --no-pager -n 50`.
   The camera keeps its logs in RAM only, and its Wi-Fi driver's messages fill them in less than an
   hour ([why](ASSESSMENT.md#writes-and-logs)), so look soon after a problem; a restart clears them.
 - **Boot log:** `adb shell cat /data/misc/wifi/docker_boot`
@@ -427,6 +449,9 @@ computer with `ssh-keygen -R <camera-ip>`.
   are gone; reflashing the firmware brings them back.
 - **No boxes:** check that boxes are on and the object is ticked, and that **In view** lists it.
   With the date and name on screen, at most 6 boxes show.
+- **MQTT doesn't connect:** the setup page's **MQTT** section shows the broker's answer, such as a
+  wrong user name or password. Check that object detection is on, and that the broker accepts
+  connections from the camera's address on its port (1883 by default).
 
 ## Security notes
 
@@ -437,6 +462,8 @@ computer with `ssh-keygen -R <camera-ip>`.
   and change the presets, which changes what Frigate records. Turn pan, tilt and zoom off on the
   setup page if you don't use it.
 - On your network the setup page uses HTTP Basic sign-in, which is not encrypted.
+- MQTT has no encryption either: the broker's password and what the camera sees cross your network
+  in plain text. The camera keeps the password in a file only root can read.
 - Anyone who joins the setup network can change settings without signing in. That network is
   protected by the password on the sticker, and normally opens only when you hold the power button,
   after a reset, or when Wi-Fi is unavailable.
@@ -448,8 +475,9 @@ The add-on keeps the camera's own firmware and its Qualcomm camera service, `qmm
 replaces everything above it. A small native program, `vaidk-camd`, runs the camera, the microphone
 and the speaker; a second, `vaidk-detect`, runs the camera's own object detector on the DSP; a Python
 RTSP server serves the streams and the talk-back channel; a Python ONVIF service moves the digital
-view; shell scripts run Wi-Fi, the setup page, crash recovery, storage upkeep and the boot sequence,
-without the retired IoT Hub step. Nothing needs Azure or any other cloud service.
+view; a Python MQTT client publishes detections; shell scripts run Wi-Fi, the setup page, crash
+recovery, storage upkeep and the boot sequence, without the retired IoT Hub step. Nothing needs Azure
+or any other cloud service.
 
 ## Documentation
 
@@ -458,7 +486,7 @@ without the retired IoT Hub step. Nothing needs Azure or any other cloud service
 | [ARCHITECTURE.md](ARCHITECTURE.md) | How the pieces fit together: layers, data flow, settings, boot, install and the camera's states |
 | [ASSESSMENT.md](ASSESSMENT.md) | The camera as it came: hardware, software, and why it stopped working out of the box |
 | [PROVENANCE.md](PROVENANCE.md) | How each feature was made to work without Azure, how it was tested, and where every piece comes from |
-| [device/README.md](device/README.md) | The add-on on the camera, with a README for each component: boot script, camera, RTSP server, pan, tilt and zoom, object detection, Wi-Fi, setup page, crash recovery, storage upkeep, status lights |
+| [device/README.md](device/README.md) | The add-on on the camera, with a README for each component: boot script, camera, RTSP server, pan, tilt and zoom, object detection, MQTT, Wi-Fi, setup page, crash recovery, storage upkeep, status lights |
 | [camd/README.md](camd/README.md) | The camera programs, `vaidk-camd` and `vaidk-detect`, and how to rebuild them |
 
 ## License

@@ -245,7 +245,10 @@ with the padding the video hardware really uses ([things learned](#things-learne
    `person 87%`.
 6. Writes `DETECT_STATE` every second and `DETECT_RECENT` when something comes into view
    ([fields](../device/detect/README.md#status)). An object stays in view for 3 s after it was last
-   seen.
+   seen; how many are in view rises at once and falls once the lower number has held for 3 s. What
+   changes, and each result while something is in view, also goes to the MQTT service as a text
+   datagram on `DETECT_EVENTS` ([events](../device/mqtt/README.md#how-events-arrive)), with `reset`
+   when VAM starts.
 7. Exits, and systemd starts it again, when VAM won't start, when the frame size changes, or when VAM
    has held a frame for 20 s without a word (a hung DSP). It clears the boxes when a result is overdue
    (0.7 s, or one and a half frame intervals at slower rates). `vaidk-camd` hides them itself once the
@@ -263,6 +266,7 @@ Colours: people amber, vehicles sky blue, animals green, anything else white.
 |---|---|
 | `DETECT_SOCKET` | The link's socket (`/run/vaidk/detect.sock`) |
 | `DETECT_STATE`, `DETECT_RECENT` | The status files (`/run/vaidk/detect.state` and `.recent`) |
+| `DETECT_EVENTS` | Where to send events for the MQTT service (`/run/vaidk/events.sock`); nothing waits if nobody listens |
 | `DETECT_ENGINE_CONFIG` | VAM's engine configuration, read for the model's name |
 | `DETECT_OBJECTS` | Labels to report, comma-separated, an underscore for a space; `all` for every label |
 | `DETECT_CONFIDENCE` | The lowest confidence reported, in percent |

@@ -11,6 +11,7 @@ Everything in this folder is copied to `/opt/vaidk` on the camera by the install
 | [RTSP server](rtsp/README.md) | `rtsp/` | Serves the main stream (with audio and the talk-back channel) on port 8900 and the sub stream on port 8901 | `vaidk-rtsp.service` |
 | [Pan, tilt and zoom](onvif/README.md) | `onvif/` | The ONVIF service on port 8080: Frigate and Home Assistant find the streams and move the digital view through it | `vaidk-onvif.service` |
 | [Object detection](detect/README.md) | `detect/` | Runs the camera's own object detector on its DSP, on frames from the camera program, which draws its boxes on the main stream. Off by default | `vaidk-detect.service` |
+| [MQTT](mqtt/README.md) | `mqtt/` | Publishes what object detection sees to your MQTT broker, with Home Assistant discovery if you want it. Off by default | `vaidk-mqtt.service` |
 | [Wi-Fi](wifi/README.md) | `wifi/` | Keeps Wi-Fi connected, opens the setup network when it can't, joins new networks | `vaidk-wifi.service` |
 | [Setup page](web/README.md) | `web/` | First-time setup on the setup network, and settings at `http://<camera-ip>/` | `vaidk-web.service` |
 | [Crash recovery](recovery/README.md) | `recovery/` | Has the kernel restart the camera after a crash, instead of leaving it unresponsive | `vaidk-recovery.service` |
@@ -57,8 +58,8 @@ then `adb reboot`. (The installers also make sure the text files have Unix line 
 2. **Stops** the add-on's services and remounts the read-only root file system read-write.
 3. **Copies** the folder to `/opt/vaidk.new`, and builds `boot/InitCamx.vaidk` there from the
    camera's own vendor boot script ([boot/README.md](boot/README.md)).
-4. **Checks** every shell script with `sh -n`, the boot script with `bash -n`, the RTSP and ONVIF
-   servers with Python's compiler, and that `camera/vaidk-camd` and `detect/vaidk-detect` are still
+4. **Checks** every shell script with `sh -n`, the boot script with `bash -n`, the RTSP, ONVIF and MQTT
+   services with Python's compiler, and that `camera/vaidk-camd` and `detect/vaidk-detect` are still
    ARM executables. Only then does it replace `/opt/vaidk`.
 5. **Installs** each component's unit in `/lib/systemd/system` (enabled for `multi-user.target`) and
    the boot drop-in `/lib/systemd/system/InitCamx.service.d/vaidk.conf`, then remounts the root
