@@ -47,7 +47,7 @@ esac
 staging=$(mktemp -d "${tmp_parent%/}/vaidk.XXXXXX")
 trap 'rm -rf "$staging"' EXIT
 cp -R "$here/device/." "$staging/"
-# Unix line endings for the text files (camera/vaidk-camd is binary and copied as is).
+# Unix line endings for the text files (camera/vaidk-camd and detect/vaidk-detect are binary and copied as is).
 find "$staging" -type f -exec grep -Iq . {} \; -exec env LC_ALL=C sed -i.crlf $'s/\r$//' {} \;
 find "$staging" -name '*.crlf' -delete
 adb shell rm -rf /tmp/vaidk-install

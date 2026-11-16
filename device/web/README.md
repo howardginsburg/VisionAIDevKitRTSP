@@ -43,13 +43,14 @@ camera's new address, then the camera restarts.
 
 | Section | What it shows or changes |
 |---|---|
-| Status | Wi-Fi network and signal, address, stream health, the stream URLs, microphone, talk-back, pan, tilt and zoom |
+| Status | Wi-Fi network and signal, address, stream health, the stream URLs, microphone, talk-back, pan, tilt and zoom, object detection |
 | System | The camera's health, measured as the page loads ([what each line shows](#the-system-section)). **Refresh** measures again |
-| Camera streams | Main: resolution, frame rate, bitrate, codec. Sub: on or off, resolution, frame rate, bitrate. Microphone: on or off, gain. Saving restarts the camera service |
+| Camera streams | Main: resolution, frame rate, bitrate, codec. Sub: on or off, resolution, frame rate, bitrate; while object detection is on, the sub stream stays on at 640x360 and only its frame rate and bitrate can change. Microphone: on or off, gain. Saving restarts the camera service |
 | Picture | Light flicker, exposure, white balance, colour and sharpness. Saving applies them at once (`camd.sh reload`) |
 | On-screen text | Date and time, camera name or both; the corner; main stream or both; the time zone (a list, or a POSIX string). Saving updates `qmmf-server`'s time zone if it changed (`camd.sh tz`) and restarts the camera service |
 | Talk-back | On or off, speaker volume, muting the microphones while the speaker plays. Volume and muting apply at once; turning talk-back on or off restarts the camera service. **Test speaker** plays a chime (`camd.sh chime`) |
 | Pan, tilt and zoom | The [ONVIF service](../onvif/README.md) on or off (saving restarts it), the current zoom, **Show the whole picture**, and the presets: go to, delete, or save the current view under a name. It asks the service over its local address ([the setup page](../onvif/README.md#the-setup-page)) |
+| Object detection | While it is on, what the [detector](../detect/README.md) is doing: running (analyses a second and the time each takes), starting, or why it stopped; what is in view; when each object was last seen; the latest detections, in the on-screen clock's time zone; the model and SNPE version. Then: on or off, the objects to report (the defaults, and **More objects** with the rest of the 80), the lowest confidence, analyses a second, and boxes on the main stream. Turning it on sets the sub stream to 640x360 if it wasn't, and says so; turning it on or off restarts the camera service and the detector; objects and confidence restart only the detector; the rate and the boxes apply at once (`camd.sh reload`) |
 | Wi-Fi | Join another network |
 | Camera name and admin account | The name (page title, Frigate name, on-screen name, DHCP host name), the admin user and password |
 | Frigate | Frigate configuration built from the current settings: go2rtc streams (with a separate two-way stream when talk-back is on) and the camera entry, with its `onvif` part when pan, tilt and zoom is on |

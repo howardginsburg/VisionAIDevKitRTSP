@@ -13,11 +13,14 @@ account, IoT Hub or SSH is needed: you install it over USB and finish setup from
   microphones mute while it plays, so you don't hear yourself.
 - **Pan, tilt and zoom:** Frigate's and Home Assistant's PTZ controls move a digital view of the
   camera's 4K picture, up to 4x, over ONVIF. Presets are saved on the setup page.
+- **Object detection on the camera (optional):** the detector the camera shipped with runs on its
+  DSP and draws labelled boxes (`person 87%`) on the main stream; the setup page shows what is in
+  view.
 - **Picture and on-screen text:** anti-flicker, exposure, white balance, colour and sharpness
   change on the fly; the date, time and camera name can be burned into the video.
 - **Setup page:** first-time setup happens on the camera's own Wi-Fi network. Afterwards, open
   `http://<camera-ip>/` to change the streams, audio, picture, on-screen text, talk-back, pan, tilt
-  and zoom presets, Wi-Fi network, camera name or admin account.
+  and zoom presets, object detection, Wi-Fi network, camera name or admin account.
 - **Recovers by itself:** if a stream stalls, the camera restarts its camera pipeline while players
   stay connected; if the camera crashes, it restarts; and if it can't reach its Wi-Fi network for 5
   minutes, it opens its setup network so you can pick another one.
@@ -256,6 +259,35 @@ arrows and clicks do nothing until the view is zoomed.
 
 How it works: [device/onvif/README.md](device/onvif/README.md).
 
+## Object detection
+
+The camera can spot people, vehicles, animals and other everyday things by itself, with the
+detector it shipped with: an SSD MobileNet model trained on the 80 objects of the COCO dataset, run
+on the camera's DSP. It is off until you turn it on in the setup page's **Object detection** section.
+
+- **What you see:** labelled boxes on the main stream (`person 87%`), coloured by kind: people
+  amber, vehicles blue, animals green, anything else white. The section shows what is in view, when
+  each object was last seen, the latest detections, and how fast the detector runs.
+- **Settings:** the objects to report (people, vehicles and pets to start with; **More objects**
+  lists the rest), the lowest confidence (60% by default), analyses a second (1, 2, 5 or 10, at most
+  the sub stream's frame rate) and whether boxes are drawn. Changes apply within seconds; turning
+  detection on or off restarts the streams.
+- **The sub stream:** detection works from it at 640x360, the recommended size. Turning detection on
+  sets the sub stream to that and keeps it there until detection is off; if it was 720p, change the
+  `detect` size in Frigate's configuration to match (the setup page's Frigate snippet shows it).
+- **Boxes are part of the video:** recordings, snapshots and live views of the main stream show
+  them. Up to 10 at a time, or 6 with the date and name on screen, people first; they follow the
+  picture by a fraction of a second. The sub stream, which Frigate detects on, stays clean, and
+  Frigate's own detection is unaffected.
+- **Accuracy:** a 2017 model that sees each frame at 300x300 pixels. It finds people reliably across
+  a room; small or distant objects less so, and now and then it mistakes something for an object
+  (a teddy bear, a bird). Raise the lowest confidence if that happens often.
+- **Cost:** about 3% more processor load, about 160 MB more memory and a degree or two of warmth.
+  Nothing is written to flash, apart from a one-time copy of the model (27 MB) when you first turn it
+  on.
+
+How it works: [device/detect/README.md](device/detect/README.md).
+
 ## Picture and on-screen text
 
 The setup page's **Picture** section changes the image while the streams keep running:
@@ -296,23 +328,24 @@ steady background noise, so a quiet room sounds nearly silent and voices come th
 ## Change settings
 
 Open `http://<camera-ip>/` and sign in with the admin account. The page shows the camera's status
-(Wi-Fi, address, stream health, microphone, talk-back, pan, tilt and zoom) and its health (processor,
-memory, storage, flash, temperatures, battery and power, Wi-Fi link, stream viewers and crashes;
-[details](device/web/README.md#the-system-section)), and lets you:
+(Wi-Fi, address, stream health, microphone, talk-back, pan, tilt and zoom, object detection) and its
+health (processor, memory, storage, flash, temperatures, battery and power, Wi-Fi link, stream viewers
+and crashes; [details](device/web/README.md#the-system-section)), and lets you:
 
 - change the main and sub stream resolution, frame rate, bitrate and codec;
 - turn the microphone on or off and set its gain;
 - adjust the picture, and choose the on-screen text and its time zone;
 - turn talk-back on or off, set the speaker volume and test the speaker;
 - turn pan, tilt and zoom on or off, show the whole picture, and save, use or delete presets;
+- turn object detection on or off, and choose what it reports and how;
 - move the camera to another Wi-Fi network;
 - rename the camera and change the admin account;
 - restart the streams or the camera, or reset it.
 
-Picture, speaker volume, microphone muting and presets apply straight away; the other changes restart
-the streams, except turning pan, tilt and zoom on or off, which restarts only that service. Settings
-the page doesn't show, such as the keyframe interval, the Wi-Fi fallback timers and restarting after a
-crash, can be changed by hand ([how](device/README.md#settings)).
+Picture, speaker volume, microphone muting, presets and object detection's settings apply straight
+away; the other changes restart the streams, except turning pan, tilt and zoom on or off, which
+restarts only that service. Settings the page doesn't show, such as the keyframe interval, the Wi-Fi
+fallback timers and restarting after a crash, can be changed by hand ([how](device/README.md#settings)).
 
 ## Status lights
 
@@ -363,7 +396,7 @@ computer with `ssh-keygen -R <camera-ip>`.
 - **Status from USB:** `adb shell sh /opt/vaidk/web/ui.sh info`, for the streams
   `adb shell cat /run/vaidk/rtsp.status`, and for programs that crashed since the camera started
   `adb shell cat /run/vaidk/crashes`.
-- **Logs:** `adb shell journalctl -u vaidk-camera -u vaidk-rtsp -u vaidk-onvif -u vaidk-wifi -u vaidk-web -u vaidk-recovery -u vaidk-storage --no-pager -n 50`.
+- **Logs:** `adb shell journalctl -u vaidk-camera -u vaidk-rtsp -u vaidk-onvif -u vaidk-detect -u vaidk-wifi -u vaidk-web -u vaidk-recovery -u vaidk-storage --no-pager -n 50`.
   The camera keeps its logs in RAM only, and its Wi-Fi driver's messages fill them in less than an
   hour ([why](ASSESSMENT.md#writes-and-logs)), so look soon after a problem; a restart clears them.
 - **Boot log:** `adb shell cat /data/misc/wifi/docker_boot`
@@ -388,6 +421,12 @@ computer with `ssh-keygen -R <camera-ip>`.
 - **The arrows don't move the view:** zoom in first ([why](#pan-tilt-and-zoom)).
 - **Recordings show only part of the picture:** the view is zoomed. Select **Show the whole picture**
   on the setup page, or go to a preset.
+- **Object detection isn't running:** the setup page's **Object detection** section says why, and
+  `journalctl -u vaidk-detect` shows the detector's log. If it says the built-in model isn't on the
+  camera, both copies of the vendor's vision sample (on the data partition and the system partition)
+  are gone; reflashing the firmware brings them back.
+- **No boxes:** check that boxes are on and the object is ticked, and that **In view** lists it.
+  With the date and name on screen, at most 6 boxes show.
 
 ## Security notes
 
@@ -407,10 +446,10 @@ computer with `ssh-keygen -R <camera-ip>`.
 
 The add-on keeps the camera's own firmware and its Qualcomm camera service, `qmmf-server`, and
 replaces everything above it. A small native program, `vaidk-camd`, runs the camera, the microphone
-and the speaker; a Python RTSP server serves the streams and the talk-back channel; a Python ONVIF
-service moves the digital view; shell scripts run Wi-Fi, the setup page, crash recovery, storage
-upkeep and the boot sequence, without the retired IoT Hub step. Nothing needs Azure or any other
-cloud service.
+and the speaker; a second, `vaidk-detect`, runs the camera's own object detector on the DSP; a Python
+RTSP server serves the streams and the talk-back channel; a Python ONVIF service moves the digital
+view; shell scripts run Wi-Fi, the setup page, crash recovery, storage upkeep and the boot sequence,
+without the retired IoT Hub step. Nothing needs Azure or any other cloud service.
 
 ## Documentation
 
@@ -419,10 +458,12 @@ cloud service.
 | [ARCHITECTURE.md](ARCHITECTURE.md) | How the pieces fit together: layers, data flow, settings, boot, install and the camera's states |
 | [ASSESSMENT.md](ASSESSMENT.md) | The camera as it came: hardware, software, and why it stopped working out of the box |
 | [PROVENANCE.md](PROVENANCE.md) | How each feature was made to work without Azure, how it was tested, and where every piece comes from |
-| [device/README.md](device/README.md) | The add-on on the camera, with a README for each component: boot script, camera, RTSP server, pan, tilt and zoom, Wi-Fi, setup page, crash recovery, storage upkeep, status lights |
-| [camd/README.md](camd/README.md) | The camera program, `vaidk-camd`, and how to rebuild it |
+| [device/README.md](device/README.md) | The add-on on the camera, with a README for each component: boot script, camera, RTSP server, pan, tilt and zoom, object detection, Wi-Fi, setup page, crash recovery, storage upkeep, status lights |
+| [camd/README.md](camd/README.md) | The camera programs, `vaidk-camd` and `vaidk-detect`, and how to rebuild them |
 
 ## License
 
-[MIT](LICENSE). Qualcomm's `qmmf-sdk` headers in `camd/third_party/qmmf-sdk/` are BSD-3-Clause; see
-their [NOTICE](camd/third_party/qmmf-sdk/NOTICE).
+[MIT](LICENSE). Qualcomm's `qmmf-sdk` and `qmmf-webserver` headers in `camd/third_party/` are
+BSD-3-Clause; see their NOTICE files ([qmmf-sdk](camd/third_party/qmmf-sdk/NOTICE),
+[qmmf-webserver](camd/third_party/qmmf-webserver/NOTICE)). The object detector's model stays on the
+camera: the add-on copies it from the camera's own software and never distributes it.

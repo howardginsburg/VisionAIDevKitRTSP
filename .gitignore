@@ -14,6 +14,11 @@ vaidk/
 vaidk.conf
 wpa_supplicant.conf
 wifi.bin
+# The object detector's model and labels, from the vendor's vision sample (stays on the camera), and
+# the sample's images.
+*.dlc
+coco_labels.txt
+visionsamplemodule*.tar
 # Partition images and backups hold all of the above, plus the camera's SSH host keys.
 *.img
 backup/

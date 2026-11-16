@@ -94,6 +94,8 @@ forget() {
     rm -f "$RUN_DIR/scan" "$RUN_DIR/wifi-try" "$RUN_DIR/wifi-try-ssid"
     # The ONVIF service keeps its presets in memory too; a restart drops them and shows the whole picture.
     systemctl try-restart vaidk-onvif.service 2>/dev/null
+    # With the settings gone, detection is off: the detector puts the vendor's files back and stops.
+    systemctl try-restart vaidk-detect.service 2>/dev/null
     write_httpd_conf
 }
 
@@ -213,6 +215,9 @@ show_message() {
         ptz-delete) text="Deleted the preset." ;;
         device) text="Saved." ;;
         restart) text="Restarting the streams." ;;
+        detect) text="Saved. Detection uses the new settings within a few seconds." ;;
+        detect-restart) text="Saved. The streams restart in about 15 seconds; object detection starts a few seconds later." ;;
+        detect-sub) text="Saved. Object detection works from the sub stream at 640x360, so it is set to that now: update the detect size in Frigate (see the Frigate section). The streams restart in about 15 seconds." ;;
         err-token) err="The page expired. Please try again." ;;
         err-ssid) err="Choose or type a Wi-Fi network name." ;;
         err-wifi-pass) err="Wi-Fi passwords have 8 to 63 characters. Leave it empty only for an open network." ;;
@@ -228,6 +233,7 @@ show_message() {
         err-ptz-name) err="Preset names use letters, digits, spaces, dots, dashes and underscores (up to 32), starting with a letter or digit." ;;
         err-ptz-full) err="The camera keeps up to 16 presets. Delete one first." ;;
         err-reset) err="Tick the box to confirm the reset." ;;
+        err-detect-objects) err="Choose at least one object to detect." ;;
         *) return 0 ;;
     esac
     if [ -n "$text" ]; then printf '<p class="note">%s</p>' "$text"; else printf '<p class="error">%s</p>' "$err"; fi
@@ -308,12 +314,18 @@ post_camera() {
     case "$skbps" in 300|500|1000|2000) ;; *) fail err-camera ;; esac
     case "$audio" in 0|1) ;; *) fail err-camera ;; esac
     case "$gain" in 0|6|12|18|24|30|36|40) ;; *) fail err-camera ;; esac
+    # Object detection works from the sub stream at 640x360; the page shows those as fixed while it's on.
+    if [ "$DETECT" = 1 ]; then sub=1; sres=640x360; fi
     set_setting MAIN_WIDTH "${res%x*}"; set_setting MAIN_HEIGHT "${res#*x}"
     set_setting MAIN_FPS "$fps"; set_setting MAIN_BITRATE "$((kbps * 1000))"; set_setting MAIN_CODEC "$codec"
     set_setting SUB_ENABLED "$sub"; set_setting SUB_WIDTH "${sres%x*}"; set_setting SUB_HEIGHT "${sres#*x}"
     set_setting SUB_FPS "$sfps"; set_setting SUB_BITRATE "$((skbps * 1000))"
     set_setting AUDIO_ENABLED "$audio"; set_setting AUDIO_GAIN_DB "$gain"
     restart_streams
+    # A detector that stopped (for example, waiting for the sub stream) tries again with the streams.
+    if [ "$DETECT" = 1 ] && ! systemctl -q is-active vaidk-detect.service; then
+        later "systemctl reset-failed vaidk-detect.service; systemctl restart vaidk-detect.service"
+    fi
     redirect "$SELF?msg=camera"
 }
 
@@ -404,6 +416,44 @@ post_ptz() {
     redirect "$SELF?msg=ptz-$action"
 }
 
+# Object detection (detect/detect.sh runs vaidk-detect). Turning it on or off restarts the streams;
+# objects and confidence restart only the detector; the rate and the boxes apply while streaming.
+post_detect() {
+    detect=$(field detect); conf=$(field confidence); fps=$(field detect_fps); boxes=$(field boxes)
+    allowed "$detect" "$DETECT" "0 1" || fail err-camera
+    allowed "$conf" "$DETECT_CONFIDENCE" "40 50 60 70 80 90" || fail err-camera
+    allowed "$fps" "$DETECT_FPS" "1 2 5 10" || fail err-camera
+    allowed "$boxes" "$DETECT_BOXES" "0 1" || fail err-camera
+    # Ticked objects arrive as obj=teddy_bear (an underscore for each space, as in the setting).
+    objects=""
+    for o in $(printf '%s\n' "$FORM" | tr '&' '\n' | sed -n 's/^obj=//p'); do
+        objects_list | tr ' ' '_' | grep -qxF "$o" || fail err-camera
+        case ",$objects," in *",$o,"*) ;; *) objects="$objects${objects:+,}$o" ;; esac
+    done
+    [ -n "$objects" ] || fail err-detect-objects
+    msg=detect
+    if [ "$detect" != "$DETECT" ]; then msg=detect-restart; fi
+    # It works from copies of the sub stream's frames, which are readable only at 640x360.
+    if [ "$detect" = 1 ] && { [ "$SUB_ENABLED" != 1 ] || [ "${SUB_WIDTH}x$SUB_HEIGHT" != 640x360 ]; }; then
+        set_setting SUB_ENABLED 1; set_setting SUB_WIDTH 640; set_setting SUB_HEIGHT 360
+        msg=detect-sub
+    fi
+    set_setting DETECT "$detect"; set_setting DETECT_OBJECTS "$objects"; set_setting DETECT_CONFIDENCE "$conf"
+    set_setting DETECT_FPS "$fps"; set_setting DETECT_BOXES "$boxes"
+    # reset-failed: after repeated errors systemd won't start the detector again until told to.
+    if [ $msg != detect ]; then
+        later "systemctl reset-failed vaidk-detect.service; systemctl restart vaidk-detect.service vaidk-camera.service"
+        redirect "$SELF?msg=$msg"
+    fi
+    # The detector restarts for new objects or confidence, and when it isn't running (saving tries again).
+    if [ "$detect" = 1 ] && { [ "$objects" != "$DETECT_OBJECTS" ] || [ "$conf" != "$DETECT_CONFIDENCE" ] ||
+        ! systemctl -q is-active vaidk-detect.service; }; then
+        later "systemctl reset-failed vaidk-detect.service; systemctl restart vaidk-detect.service"
+    fi
+    sh "$VAIDK_DIR/camera/camd.sh" reload
+    redirect "$SELF?msg=detect"
+}
+
 handle_post() {
     read_form
     [ "$(field t)" = "$(token)" ] || fail err-token
@@ -417,6 +467,7 @@ handle_post() {
         chime) sh "$VAIDK_DIR/camera/camd.sh" chime; redirect "$SELF?msg=chime" ;;
         onvif) post_onvif ;;
         ptz) post_ptz ;;
+        detect) post_detect ;;
         device) post_device ;;
         restart-streams) restart_streams; redirect "$SELF?msg=restart" ;;
         reboot)
@@ -500,6 +551,8 @@ status_section() {
     if [ "$AUDIO_ENABLED" = 1 ]; then item "Microphone" "On, +${AUDIO_GAIN_DB} dB gain (main stream)"; else item "Microphone" "Off"; fi
     if [ "$TALKBACK" = 1 ]; then item "Talk-back" "On, speaker volume ${SPEAKER_VOLUME}%"; else item "Talk-back" "Off"; fi
     if [ "$ONVIF" = 1 ]; then item "Pan, tilt and zoom" "On, ONVIF port $ONVIF_PORT"; else item "Pan, tilt and zoom" "Off"; fi
+    if [ "$DETECT" = 1 ] && [ "$(detect_value status)" = running ]; then item "Object detection" "On, in view: $(in_view)"
+    else item "Object detection" "$(detect_status)"; fi
     printf '</dl></section>'
 }
 
@@ -569,6 +622,7 @@ prog_label() { # prog_label PID NAME: how the busiest-programs list shows a prog
             esac ;;
         qmmf-server) echo "qmmf-server (camera)" ;;
         vaidk-camd) echo "vaidk-camd (streams)" ;;
+        vaidk-detect) echo "vaidk-detect (object detection)" ;;
         altekflow) echo "altekflow (lights)" ;;
         dockerd|containerd) echo "$2 (Docker, unused)" ;;
         *) echo "$2" ;;
@@ -729,12 +783,20 @@ streams_section() {
     for b in 2000 4000 6000 8000; do option $b "$((b / 1000)) Mbps" "$((MAIN_BITRATE / 1000))"; done
     printf '</select></label><label>Codec <select name="codec">'
     option 1 "H.264 (most compatible)" "$MAIN_CODEC"; option 0 "H.265 (smaller files)" "$MAIN_CODEC"
-    printf '</select></label></fieldset><fieldset><legend>Sub stream (port 8901)</legend><label>Sub stream <select name="sub">'
-    option 1 On "$SUB_ENABLED"; option 0 Off "$SUB_ENABLED"
-    printf '</select></label><label>Resolution <select name="sub_res">'
-    cur="${SUB_WIDTH}x$SUB_HEIGHT"
-    option 1280x720 "720p (1280x720)" "$cur"; option 640x360 "640x360" "$cur"
-    printf '</select></label><label>Frame rate <select name="sub_fps">'
+    printf '</select></label></fieldset><fieldset><legend>Sub stream (port 8901)</legend>'
+    if [ "$DETECT" = 1 ]; then
+        # post_camera keeps these too.
+        printf '<p class="hint">On, 640x360: object detection works from the sub stream. Turn detection off to change these.</p>'
+        printf '<input type="hidden" name="sub" value="1"><input type="hidden" name="sub_res" value="640x360">'
+    else
+        printf '<label>Sub stream <select name="sub">'
+        option 1 On "$SUB_ENABLED"; option 0 Off "$SUB_ENABLED"
+        printf '</select></label><label>Resolution <select name="sub_res">'
+        cur="${SUB_WIDTH}x$SUB_HEIGHT"
+        option 1280x720 "720p (1280x720)" "$cur"; option 640x360 "640x360" "$cur"
+        printf '</select></label>'
+    fi
+    printf '<label>Frame rate <select name="sub_fps">'
     for f in 5 10 15; do option $f "$f fps" "$SUB_FPS"; done
     printf '</select></label><label>Bitrate <select name="sub_kbps">'
     for b in 300 500 1000 2000; do option $b "$b kbps" "$((SUB_BITRATE / 1000))"; done
@@ -871,6 +933,91 @@ ptz_section() {
     printf '</section>'
 }
 
+# ----- Object detection section -----
+
+OBJECTS_FILE=$VAIDK_DIR/detect/objects.txt
+objects_list() { grep -v '^#' "$OBJECTS_FILE" 2>/dev/null; } # what the built-in model can report
+detect_value() { sed -n "s/^$1=//p" "$RUN_DIR/detect.state" 2>/dev/null | head -n 1; } # detect_value KEY
+
+detect_status() { # one line: what the detector is doing
+    if [ "$DETECT" != 1 ]; then echo "Off"; return; fi
+    st=$(detect_value status); err=$(detect_value error)
+    case "$(systemctl is-active vaidk-detect.service 2>/dev/null)" in
+        active)
+            case "$st" in
+                running)
+                    rate=$(detect_value rate)
+                    if [ "$rate" = 0.0 ]; then echo "Running on the DSP, waiting for frames from the camera"
+                    else echo "Running on the DSP: $rate analyses a second, $(detect_value latency_ms) ms each"; fi ;;
+                preparing) echo "Copying the built-in model to the camera's storage (27 MB, once)" ;;
+                error) echo "Stopping after an error: $err" ;;
+                *) echo "Starting" ;;
+            esac ;;
+        activating) echo "Restarting after an error${err:+: $err}" ;;
+        failed) echo "Stopped after repeated errors${err:+: $err}. Save the settings below to try again." ;;
+        *) if [ -n "$err" ]; then echo "Off: $err"; else echo "Not running"; fi ;;
+    esac
+}
+
+in_view() { # "person (2), car (1)" or "nothing"
+    v=$(detect_value present | awk -F, '{ for (i = 1; i <= NF; i++) { n = split($i, p, " "); c = p[n]; l = $i; sub(/ [0-9]+$/, "", l); printf "%s%s (%s)", (i > 1) ? ", " : "", l, c } }')
+    echo "${v:-nothing}"
+}
+
+detect_section() {
+    printf '<section id="detect"><h2>Object detection</h2>'
+    if [ "$DETECT" = 1 ]; then
+        printf '<dl>'
+        item "Status" "$(detect_status)"
+        if [ "$(detect_value status)" = running ]; then
+            item "In view" "$(in_view)"
+            now=$(date +%s)
+            seen=$(sed -n 's/^seen=//p' "$RUN_DIR/detect.state" 2>/dev/null | awk -F'|' -v now="$now" '
+                { a = now - $2; t = (a < 60) ? "under a minute" : (a < 3600) ? int(a / 60) " min" : (a < 172800) ? int(a / 3600) " h" : int(a / 86400) " days"
+                  printf "%s%s %s ago (%s%%)", (NR > 1) ? ", " : "", $1, t, $3 }')
+            if [ -n "$seen" ]; then item "Last seen" "$seen"; fi
+            recent=$(TZ="$TIME_ZONE" awk -F'|' 'NR <= 8 {
+                    f = (strftime("%Y%m%d", $1) == strftime("%Y%m%d", systime())) ? "%H:%M:%S" : "%b %d %H:%M"
+                    printf "%s%s %s %s%%", (NR > 1) ? ", " : "", strftime(f, $1), $2, $3 }' "$RUN_DIR/detect.recent" 2>/dev/null)
+            if [ -n "$recent" ]; then item "Recent" "$recent"; fi
+            snpe=$(detect_value snpe); snpe=${snpe%%,*}
+            item "Model" "SSD MobileNet v1 (COCO), built in${snpe:+; $snpe on the DSP}"
+        fi
+        printf '</dl>'
+    fi
+    form_start detect
+    printf '<label>Object detection <select name="detect">'
+    options "$DETECT" 1 "On" 0 "Off"
+    printf '</select></label><fieldset><legend>Objects</legend>'
+    # The default objects first; the rest of what the model knows folds away (open when one is ticked).
+    defaults=",$(. "$VAIDK_DIR/defaults.conf"; echo "$DETECT_OBJECTS"),"
+    more=""
+    for v in $(printf '%s' "$DETECT_OBJECTS" | tr ',' ' '); do
+        case "$defaults" in *",$v,"*) ;; *) more=' open' ;; esac
+    done
+    for pass in main more; do
+        if [ $pass = main ]; then printf '<div class="objects">'
+        else printf '<details%s><summary>More objects</summary><div class="objects">' "$more"; fi
+        objects_list | while read -r o; do
+            v=$(printf '%s' "$o" | tr ' ' '_')
+            case "$defaults" in *",$v,"*) [ $pass = main ] || continue ;; *) [ $pass = more ] || continue ;; esac
+            case ",$DETECT_OBJECTS," in *",$v,"*) c=' checked' ;; *) c='' ;; esac
+            printf '<label class="check"><input type="checkbox" name="obj" value="%s"%s> %s</label>' "$v" "$c" "$o"
+        done
+        printf '</div>'
+        if [ $pass = more ]; then printf '</details>'; fi
+    done
+    printf '</fieldset><label>Lowest confidence <select name="confidence">'
+    options "$DETECT_CONFIDENCE" 40 "40%" 50 "50%" 60 "60% (recommended)" 70 "70%" 80 "80%" 90 "90%"
+    printf '</select></label><label>Analyses a second <select name="detect_fps">'
+    options "$DETECT_FPS" 1 1 2 2 5 5 10 10
+    printf '</select></label><label>Boxes on the main stream <select name="boxes">'
+    options "$DETECT_BOXES" 1 "On" 0 "Off"
+    printf '</select></label>'
+    printf '<p class="hint">The camera'"'"'s own detector (SSD MobileNet v1, trained on COCO) runs on its DSP and adds about 3%% to the processor load. It works from the sub stream, which stays on at 640x360 while detection is on, at most at the sub stream'"'"'s frame rate (%s fps). Labelled boxes are drawn into the main stream'"'"'s video: up to 10, or 6 with the date and name shown, people first; the sub stream stays clean for Frigate. Turning detection on or off restarts the streams; other changes apply within seconds.</p>' "$SUB_FPS"
+    printf '<button>Save</button></form></section>'
+}
+
 wifi_section() {
     printf '<section id="wifi"><h2>Wi-Fi</h2>'
     if [ "$MODE" = lan ]; then
@@ -973,6 +1120,7 @@ settings_page() {
     overlay_section
     talk_section
     ptz_section
+    detect_section
     wifi_section
     device_section
     frigate_section

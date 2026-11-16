@@ -3,5 +3,6 @@
 device/** text eol=lf
 *.sh text eol=lf
 *.ps1 text eol=crlf
-# Compiled camera program.
+# Compiled camera programs.
 device/camera/vaidk-camd binary
+device/detect/vaidk-detect binary

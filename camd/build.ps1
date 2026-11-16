@@ -1,16 +1,19 @@
 <#
 .SYNOPSIS
-  Builds vaidk-camd (the add-on's camera program) for the Vision AI DevKit.
+  Builds the add-on's camera programs for the Vision AI DevKit: vaidk-camd and vaidk-detect.
 
 .DESCRIPTION
-  Cross-compiles camd.cpp, image.cpp and talkback.cpp for the camera's 32-bit ARM Linux and writes
-  device/camera/vaidk-camd.
+  Cross-compiles for the camera's 32-bit ARM Linux:
+  - camd.cpp, image.cpp and talkback.cpp into device/camera/vaidk-camd (the streams);
+  - detect.cpp into device/detect/vaidk-detect (object detection; it loads the camera's own video
+    analytics libraries at run time, so it links nothing from the camera).
   - Compiler: Linaro GCC 6.5 (matches the camera's C++ runtime, libstdc++ 6.0.22). Downloaded
     once from Arm's legacy Linaro toolchain archive and checked against its published MD5.
-  - Qualcomm qmmf-sdk headers: vendored in third_party/ (BSD-3-Clause, see NOTICE).
+  - Qualcomm qmmf-sdk and qmmf-webserver headers: vendored in third_party/ (BSD-3-Clause, see each
+    NOTICE).
   - The camera's own libraries (Qualcomm's qmmf clients and Android's camera metadata), needed
-    only to link. They aren't stored in the repository; the script copies them from a camera
-    connected over USB (adb).
+    only to link vaidk-camd. They aren't stored in the repository; the script copies them from a
+    camera connected over USB (adb).
 
 .PARAMETER CacheDir
   Where the toolchain and the camera's libraries are kept between builds.
@@ -18,7 +21,8 @@
 [CmdletBinding()]
 param(
     [string]$CacheDir = (Join-Path $env:LOCALAPPDATA 'vaidk-build'),
-    [string]$Output = (Join-Path $PSScriptRoot '..\device\camera\vaidk-camd')
+    [string]$Output = (Join-Path $PSScriptRoot '..\device\camera\vaidk-camd'),
+    [string]$DetectOutput = (Join-Path $PSScriptRoot '..\device\detect\vaidk-detect')
 )
 $ErrorActionPreference = 'Stop'
 
@@ -63,12 +67,15 @@ if ($missing.Count -gt 0) {
 
 $outDir = Split-Path -Parent $Output
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-$flags = @(
+$common = @(
     '-std=c++14', '-O2', '-Wall', '-Wextra',
+    '-Wno-psabi',                                     # GCC's note that GCC 7.1 passes some arguments differently
     '-D_GLIBCXX_USE_CXX11_ABI=0',                     # the camera's libraries use the pre-C++11 std::string ABI
     '-mcpu=cortex-a7', '-mfpu=neon-vfpv4', '-mfloat-abi=hard', '-pthread',
     "-I$(Join-Path $PSScriptRoot 'third_party\qmmf-sdk\include')",
-    "-I$(Join-Path $PSScriptRoot 'android')",
+    "-I$(Join-Path $PSScriptRoot 'android')"
+)
+$flags = $common + @(
     (Join-Path $PSScriptRoot 'camd.cpp'),
     (Join-Path $PSScriptRoot 'image.cpp'),
     (Join-Path $PSScriptRoot 'talkback.cpp'),
@@ -83,3 +90,17 @@ if ($LASTEXITCODE -ne 0) { throw "Compilation failed" }
 & (Join-Path $toolchain 'bin\arm-linux-gnueabihf-strip.exe') $Output
 if ($LASTEXITCODE -ne 0) { throw "strip failed" }
 Write-Host ("Built {0} ({1:N0} bytes)" -f (Resolve-Path $Output), (Get-Item $Output).Length)
+
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $DetectOutput) | Out-Null
+$flags = $common + @(
+    "-I$(Join-Path $PSScriptRoot 'third_party\qmmf-webserver\include')",
+    (Join-Path $PSScriptRoot 'detect.cpp'),
+    '-o', $DetectOutput,
+    '-ldl'
+)
+Write-Host "Compiling vaidk-detect..."
+& $gxx @flags
+if ($LASTEXITCODE -ne 0) { throw "Compilation failed" }
+& (Join-Path $toolchain 'bin\arm-linux-gnueabihf-strip.exe') $DetectOutput
+if ($LASTEXITCODE -ne 0) { throw "strip failed" }
+Write-Host ("Built {0} ({1:N0} bytes)" -f (Resolve-Path $DetectOutput), (Get-Item $DetectOutput).Length)

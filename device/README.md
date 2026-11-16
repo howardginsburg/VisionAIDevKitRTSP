@@ -10,14 +10,16 @@ Everything in this folder is copied to `/opt/vaidk` on the camera by the install
 | [Camera](camera/README.md) | `camera/` | Runs `vaidk-camd`, which drives the camera, microphone and speaker and hands the encoded streams to the RTSP server | `vaidk-camera.service` |
 | [RTSP server](rtsp/README.md) | `rtsp/` | Serves the main stream (with audio and the talk-back channel) on port 8900 and the sub stream on port 8901 | `vaidk-rtsp.service` |
 | [Pan, tilt and zoom](onvif/README.md) | `onvif/` | The ONVIF service on port 8080: Frigate and Home Assistant find the streams and move the digital view through it | `vaidk-onvif.service` |
+| [Object detection](detect/README.md) | `detect/` | Runs the camera's own object detector on its DSP, on frames from the camera program, which draws its boxes on the main stream. Off by default | `vaidk-detect.service` |
 | [Wi-Fi](wifi/README.md) | `wifi/` | Keeps Wi-Fi connected, opens the setup network when it can't, joins new networks | `vaidk-wifi.service` |
 | [Setup page](web/README.md) | `web/` | First-time setup on the setup network, and settings at `http://<camera-ip>/` | `vaidk-web.service` |
 | [Crash recovery](recovery/README.md) | `recovery/` | Has the kernel restart the camera after a crash, instead of leaving it unresponsive | `vaidk-recovery.service` |
 | [Storage upkeep](storage/README.md) | `storage/` | Keeps the vendor's properties file in RAM to spare the flash, records crashes without crash dumps, and trims logs in RAM | `vaidk-storage.service` |
 | [Status lights](lights/README.md) | `lights/` | Makes the vendor's "IoT Hub connected" light mean "streaming" | The vendor LED controller, `altekflow` |
 
-The camera program's source and build script are in [camd/](../camd/README.md); its build output is
-`camera/vaidk-camd`. How the components work together is in [ARCHITECTURE.md](../ARCHITECTURE.md).
+The camera programs' source and build script are in [camd/](../camd/README.md); their build outputs
+are `camera/vaidk-camd` and `detect/vaidk-detect`. How the components work together is in
+[ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ## Shared files
 
@@ -56,8 +58,8 @@ then `adb reboot`. (The installers also make sure the text files have Unix line 
 3. **Copies** the folder to `/opt/vaidk.new`, and builds `boot/InitCamx.vaidk` there from the
    camera's own vendor boot script ([boot/README.md](boot/README.md)).
 4. **Checks** every shell script with `sh -n`, the boot script with `bash -n`, the RTSP and ONVIF
-   servers with Python's compiler, and that `camera/vaidk-camd` is still an ARM executable. Only then
-   does it replace `/opt/vaidk`.
+   servers with Python's compiler, and that `camera/vaidk-camd` and `detect/vaidk-detect` are still
+   ARM executables. Only then does it replace `/opt/vaidk`.
 5. **Installs** each component's unit in `/lib/systemd/system` (enabled for `multi-user.target`) and
    the boot drop-in `/lib/systemd/system/InitCamx.service.d/vaidk.conf`, then remounts the root
    read-only.
@@ -67,6 +69,7 @@ then `adb reboot`. (The installers also make sure the text files have Unix line 
    `/lib/systemd/system/qmmf-server.service.d/vaidk.conf` (`camera/camd.sh tz`).
 8. **Disables** the vendor preview server (`ipc-webserver`) and stops the vendor setup site.
 
-**Uninstall** stops the services, forgets the settings and the admin account (if the add-on created
-it), and removes `/opt/vaidk`, the units and both drop-ins. The vendor preview server is enabled
-again, so after a restart the camera runs its original software and setup.
+**Uninstall** stops the services, puts back the vendor's object-detector files
+([detect/README.md](detect/README.md#how-it-starts)), forgets the settings and the admin account (if
+the add-on created it), and removes `/opt/vaidk`, the units and both drop-ins. The vendor preview
+server is enabled again, so after a restart the camera runs its original software and setup.

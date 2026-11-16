@@ -3,20 +3,28 @@
 `vaidk-camd` runs the camera through Qualcomm's camera service, `qmmf-server`, the same service the
 vendor's own software uses. It starts the camera, creates the video and microphone tracks, and sends
 every encoded frame to the add-on's [RTSP server](../device/rtsp/README.md). It also applies the
-picture settings and the digital pan, tilt and zoom, draws the on-screen text, and plays talk-back
-audio from the RTSP server on the speaker. It is about 1,600 lines of C++.
+picture settings and the digital pan, tilt and zoom, draws the on-screen text, plays talk-back audio
+from the RTSP server on the speaker, and, with object detection on, hands frames to the object
+detector and draws the boxes it sends back. It is about 2,000 lines of C++.
 
-On the camera it runs as `vaidk-camera.service`, started by `camd.sh` with the saved settings; that
-side is described in [device/camera/README.md](../device/camera/README.md).
+This folder also holds the object detector, `vaidk-detect` (about 900 lines), which runs the camera's
+own video analytics in a process of its own ([object detection](#object-detection)).
+
+On the camera they run as `vaidk-camera.service` and `vaidk-detect.service`, started by `camd.sh` and
+`detect.sh` with the saved settings; that side is described in
+[device/camera/README.md](../device/camera/README.md) and [device/detect/README.md](../device/detect/README.md).
 
 | Path | What it is |
 |---|---|
-| [camd.cpp](camd.cpp) | The program: camera, tracks, on-screen text, the media socket and the main loop |
+| [camd.cpp](camd.cpp) | The camera program: camera, tracks, on-screen text, the detector link and boxes, the media socket and the main loop |
 | [image.cpp](image.cpp), [image.h](image.h) | Picture settings and the digital zoom's crop, through the camera's request settings (metadata) |
 | [talkback.cpp](talkback.cpp), [talkback.h](talkback.h) | Talk-back: the talk socket, G.711 decoding, the speaker through qmmf's player, microphone muting |
+| [detect.cpp](detect.cpp) | The object detector: loads Qualcomm's video analytics manager, feeds it frames, filters its results, sends back boxes, writes the status files |
+| [detect_link.h](detect_link.h) | The messages between the two programs on `/run/vaidk/detect.sock` |
 | [common.h](common.h) | Shared helpers: clocks, logging, settings |
-| [build.ps1](build.ps1) | Builds it on Windows and writes `device/camera/vaidk-camd` |
+| [build.ps1](build.ps1) | Builds both on Windows and writes `device/camera/vaidk-camd` and `device/detect/vaidk-detect` |
 | [third_party/qmmf-sdk/](third_party/qmmf-sdk/) | Qualcomm's `qmmf-sdk` headers at the camera's release, BSD-3-Clause ([NOTICE](third_party/qmmf-sdk/NOTICE)) |
+| [third_party/qmmf-webserver/](third_party/qmmf-webserver/) | Qualcomm's interface to its video analytics manager, `qmmf_vam_interface.h`, from `qmmf-webserver` at the camera's release, BSD-3-Clause ([NOTICE](third_party/qmmf-webserver/NOTICE)) |
 | [android/](android/) | Two Android headers that the qmmf headers include. `camera/CameraMetadata.h` declares the camera metadata functions and the Android 7 `CameraMetadata` class exactly as the camera's libraries export them; `utils/Log.h` is an empty stand-in |
 
 ## What it does
@@ -26,9 +34,11 @@ side is described in [device/camera/README.md](../device/camera/README.md).
    failed, the program exits.
 2. **Starts camera 0** at `CAMERA_FPS`.
 3. **Creates every track first**: session 1 holds the main video (track 1) and the microphone
-   (track 101); session 2 holds the sub video (track 2). Adding a track while another is running
-   starves the running track's encoder, so nothing starts until all tracks exist. If the microphone
-   track can't be created, the program carries on without audio.
+   (track 101); session 2 holds the sub video (track 2); with `DETECT=1`, session 3 holds the copy
+   of the sub stream's frames for the object detector (track 3). Adding a track while another is
+   running starves the running track's encoder, so nothing starts until all tracks exist. If the
+   microphone track can't be created, the program carries on without audio; if the detection track
+   can't, without detection.
 4. **Starts** each session, then runs `CAMD_ON_START` in the background (the microphone gain).
 5. **Applies the picture settings** from `CAMD_LIVE` and the view from `CAMD_PTZ`, and **adds the
    on-screen text** to the running video tracks (see below).
@@ -37,18 +47,19 @@ side is described in [device/camera/README.md](../device/camera/README.md).
    `qmmf-server` straight away: buffers held too long stall the camera pipeline.
 8. **Watches** the streams. If an active stream delivers nothing for 10 s, the program exits with
    status 1 and systemd starts it again. Every 10 minutes it logs frame and byte totals.
-9. **On `SIGHUP`**, re-reads `CAMD_LIVE` and applies the picture and speaker settings. **On
+9. **On `SIGHUP`**, re-reads `CAMD_LIVE` and applies the picture, speaker and detection settings. **On
    `SIGUSR1`**, plays a test chime on the speaker. **On `SIGUSR2`**, re-reads `CAMD_PTZ` and moves
    the view.
-10. **On `SIGTERM` or `SIGINT`**, stops talk-back, removes the on-screen text, stops the sessions,
-    deletes the tracks and sessions, stops the camera and disconnects. If that teardown hangs for
-    20 s, the program exits anyway.
+10. **On `SIGTERM` or `SIGINT`**, stops talk-back and the detector link, removes the boxes and the
+    on-screen text, stops the sessions, deletes the tracks and sessions, stops the camera and
+    disconnects. If that teardown hangs for 20 s, the program exits anyway.
 
 | Track | Session | Format |
 |---|---|---|
 | Main video (1) | 1 | H.264 High or H.265 Main (the encoder picks the level from the resolution: 4.0 at 1080p), maximum-bitrate rate control at `MAIN_BITRATE`, an IDR frame every `KEYFRAME_SECONDS` with SPS/PPS in front of it, no access unit delimiters |
 | Microphone (101) | 1 | AAC-LC from the built-in microphones, 16-bit, at `AUDIO_RATE`, `AUDIO_CHANNELS` and `AUDIO_BITRATE`, as raw AAC frames |
 | Sub video (2) | 2 | H.264 High, otherwise like the main video |
+| Detection (3) | 3 | Only with `DETECT=1` and the sub stream at 640x360: uncompressed NV12 copies of the sub stream's frames (`SourceVideoTrack`), at its frame rate |
 
 ## Output: the media socket
 
@@ -178,12 +189,93 @@ meanwhile. If the program dies while they are muted, `mic.sh` sets the gain agai
 
 **Test chime:** `SIGUSR1` queues two bell-like notes (A5, then E5) through the same path.
 
+## Object detection
+
+With `DETECT=1` two programs share the work: `vaidk-camd` owns the camera and the video, and
+`vaidk-detect` runs Qualcomm's video analytics manager (VAM) on the frames it is given. VAM, its ML
+engine and SNPE are the camera's own libraries; the detector loads them with `dlopen` and drives them
+through the interface Qualcomm published with its `qmmf-webserver`
+([third_party/qmmf-webserver](third_party/qmmf-webserver/)). In a process of its own, a crash or a
+hang there never takes the streams down.
+
+```mermaid
+sequenceDiagram
+    participant Q as qmmf-server
+    participant C as vaidk-camd
+    participant D as vaidk-detect
+    participant V as VAM, ML engine, SNPE on the DSP
+    D->>C: want 1 (a slot is free)
+    Q->>C: a copy of a sub stream frame (NV12)
+    C->>D: the frame, if one was asked for and is due
+    C->>Q: the buffer back, at once
+    D->>V: QueueVAMBuffers
+    V-->>D: SendVAMMeta: the objects, as JSON
+    V-->>D: ReturnTrackBuffer
+    D->>C: boxes, most important first
+    C->>Q: bounding-box overlays on the main stream
+```
+
+**The link** ([detect_link.h](detect_link.h)), on `/run/vaidk/detect.sock`: the detector listens;
+`vaidk-camd` connects, from a thread of its own, and tries again every second while it isn't there.
+Each message is a 12-byte header (`VAID`, type, length) and a payload:
+
+| Message | Direction | Payload |
+|---|---|---|
+| Want (`1`) | detector → camd | How many more frames it can take: it has two slots |
+| Frame (`2`) | camd → detector | The size, plane strides, row counts and offsets, then the NV12 picture as qmmf delivered it (389,120 bytes at 640x360) |
+| Boxes (`3`) | detector → camd | Up to 32 boxes, most important first: position and size in ten-thousandths of the picture, an RGBA colour and a label |
+
+**Frames.** The detection track is a copy of the sub stream's frames (`SourceVideoTrack`), which shows
+exactly what the main stream shows, zoomed or not. `vaidk-camd` copies a frame out of qmmf's buffer
+only when the detector has asked for one and one is due at `DETECT_FPS`, allowing half a frame of
+jitter, and returns the buffer to qmmf at once; the other frames are skipped. It describes each frame
+with the padding the video hardware really uses ([things learned](#things-learned-about-qmmf)).
+
+**The detector**, `vaidk-detect`:
+1. Reads SNPE's version and whether its DSP runtime is available, for the status.
+2. Loads `libav_queue.so.0` globally, then `libvam_interface.so.0`; creates VAM through its factory
+   and initialises it.
+3. On the first frame, starts VAM with that frame's layout. The ML engine reads
+   `/data/misc/camera/va-snpe-engine-library_config.json` and the model it names, which `detect.sh`
+   points at the add-on's files, and the DSP loads the model: about 0.7 s.
+4. Queues each frame. VAM keeps it until it has analysed it, then returns it, and sends its results
+   as JSON: each object's label, confidence and position.
+5. Keeps the objects named in `DETECT_OBJECTS` that reach `DETECT_CONFIDENCE`, sorts them (people,
+   vehicles, animals, others; then by confidence) and sends them back as boxes labelled like
+   `person 87%`.
+6. Writes `DETECT_STATE` every second and `DETECT_RECENT` when something comes into view
+   ([fields](../device/detect/README.md#status)). An object stays in view for 3 s after it was last
+   seen.
+7. Exits, and systemd starts it again, when VAM won't start, when the frame size changes, or when VAM
+   has held a frame for 20 s without a word (a hung DSP). It clears the boxes when a result is overdue
+   (0.7 s, or one and a half frame intervals at slower rates). `vaidk-camd` hides them itself once the
+   detector has been quiet for 1.5 s (2.5 s at 1 analysis a second), and connects again when it is back.
+
+**Boxes.** `vaidk-camd` draws them with qmmf's bounding-box overlays on the main track, as Qualcomm's
+own media server drew VAM's results: an overlay per box, created once, then moved and shown or hidden
+as results arrive. qmmf draws at most 10 overlays on a track and doesn't check, so the boxes get what
+the on-screen text leaves: 10, or 6 with the date and name (two texts, two labels behind them). qmmf
+draws a box's outline and label on a surface 480 pixels wide and stretches it onto the box, so the
+label and line scale with the box; a box whose shape changes by more than half is drawn afresh.
+Colours: people amber, vehicles sky blue, animals green, anything else white.
+
+| Variable (`vaidk-detect`) | Meaning |
+|---|---|
+| `DETECT_SOCKET` | The link's socket (`/run/vaidk/detect.sock`) |
+| `DETECT_STATE`, `DETECT_RECENT` | The status files (`/run/vaidk/detect.state` and `.recent`) |
+| `DETECT_ENGINE_CONFIG` | VAM's engine configuration, read for the model's name |
+| `DETECT_OBJECTS` | Labels to report, comma-separated, an underscore for a space; `all` for every label |
+| `DETECT_CONFIDENCE` | The lowest confidence reported, in percent |
+| `DETECT_HOLD` | Seconds an object stays in view after it was last seen; not a setting, 3 |
+| `DETECT_DEBUG` | `N`: log VAM's first `N` results as it sent them |
+
 ## Live settings
 
 `camd.sh` writes `CAMD_LIVE` (`/run/vaidk/camd.conf`), one `KEY=value` per line: `ANTIFLICKER`,
-`EXPOSURE_EV`, `WHITE_BALANCE`, `SATURATION`, `SHARPNESS`, `SPEAKER_VOLUME` and
-`TALKBACK_MUTE_MIC`. The program reads it at start and on every `SIGHUP`; `camd.sh reload` rewrites
-it and sends the signal. The view has its own file and signal, `CAMD_PTZ` and `SIGUSR2`
+`EXPOSURE_EV`, `WHITE_BALANCE`, `SATURATION`, `SHARPNESS`, `SPEAKER_VOLUME`, `TALKBACK_MUTE_MIC`,
+`DETECT_FPS` (frames a second to the object detector) and `DETECT_BOXES` (`0` hides the boxes). The
+program reads it at start and on every `SIGHUP`; `camd.sh reload` rewrites it and sends the signal.
+The view has its own file and signal, `CAMD_PTZ` and `SIGUSR2`
 ([digital pan, tilt and zoom](#digital-pan-tilt-and-zoom)), because the ONVIF service changes it ten
 times a second during a move.
 
@@ -204,6 +296,8 @@ match [defaults.conf](../device/defaults.conf).
 | `NAME`, `OVERLAY`, `OVERLAY_POSITION`, `OVERLAY_STREAMS` | On-screen text: `off`, `time`, `name` or `time-name`; the corner for the date and time; `main` or `both` |
 | `CAMD_SOCKET` | The media socket |
 | `CAMD_TALK` | The talk-back socket; unset (talk-back off) means no socket and no backchannel |
+| `DETECT` | `1`: the detection track and the link to `vaidk-detect`. Needs the sub stream on at 640x360; otherwise the program logs why and streams without it |
+| `CAMD_DETECT` | The object detector's socket (default `/run/vaidk/detect.sock`) |
 | `CAMD_LIVE` | The live settings file (default `/run/vaidk/camd.conf`) |
 | `CAMD_PTZ` | The view file (default `/run/vaidk/ptz.conf`) |
 | `CAMD_ON_START` | A shell command run once the streams have started |
@@ -221,8 +315,8 @@ systemctl start vaidk-camera
 
 ## Build
 
-`device/camera/vaidk-camd` is committed, built from the sources here. To rebuild it on Windows,
-connect the camera over USB and run:
+`device/camera/vaidk-camd` and `device/detect/vaidk-detect` are committed, built from the sources
+here. To rebuild them on Windows, connect the camera over USB and run:
 
 ```powershell
 .\camd\build.ps1
@@ -230,21 +324,25 @@ connect the camera over USB and run:
 
 1. **Compiler.** Downloads Linaro GCC 6.5-2018.12 for Windows (`arm-linux-gnueabihf`, 320 MB) from
    Arm's archive of legacy Linaro toolchains, checks its published MD5, and unpacks it.
-2. **Libraries.** Copies four of the camera's libraries from `/usr/lib` with `adb`, only to link
-   against: `libqmmf_recorder_client.so`, `libqmmf_player_client.so`, `libcamera_client.so.0` and
-   `libcamera_metadata.so.0`. They are kept with the compiler in `%LOCALAPPDATA%\vaidk-build`, never in
-   this repository.
-3. **Compile and strip.** Writes `device/camera/vaidk-camd`, about 64 KB.
+2. **Libraries.** Copies four of the camera's libraries from `/usr/lib` with `adb`, only for
+   `vaidk-camd` to link against: `libqmmf_recorder_client.so`, `libqmmf_player_client.so`,
+   `libcamera_client.so.0` and `libcamera_metadata.so.0`. They are kept with the compiler in
+   `%LOCALAPPDATA%\vaidk-build`, never in this repository.
+3. **Compile and strip.** Writes `device/camera/vaidk-camd`, about 73 KB, and
+   `device/detect/vaidk-detect`, about 51 KB. The detector links nothing from the camera: it loads
+   the video analytics libraries when it runs.
 
 | Flag | Why |
 |---|---|
 | GCC 6 | The camera's C++ runtime is `libstdc++.so.6.0.22` (GCC 6). Newer compilers emit symbols it lacks |
 | `-D_GLIBCXX_USE_CXX11_ABI=0` | The camera's libraries use the older `std::string` and `std::list` layout, and the qmmf API passes `std::string`, `std::vector` and `std::function` |
 | `-mcpu=cortex-a7 -mfpu=neon-vfpv4 -mfloat-abi=hard` | The camera runs 32-bit ARMv7 hard-float Linux |
-| `-l:libqmmf_recorder_client.so -l:libqmmf_player_client.so -l:libcamera_client.so.0 -l:libcamera_metadata.so.0` | Links against the camera's own libraries |
+| `-Wno-psabi` | Silences GCC's note that GCC 7.1 passes some arguments differently; everything here is built with GCC 6 |
+| `-l:libqmmf_recorder_client.so -l:libqmmf_player_client.so -l:libcamera_client.so.0 -l:libcamera_metadata.so.0` | `vaidk-camd` links against the camera's own libraries |
 | `-Wl,--allow-shlib-undefined` | Those libraries' own dependencies (Binder and others) are found on the camera at run time |
+| `-ldl` | `vaidk-detect` loads the video analytics libraries with `dlopen` |
 
-The build is reproducible: the same compiler and sources produce a byte-identical binary
+The build is reproducible: the same compiler and sources produce byte-identical binaries
 ([PROVENANCE.md](../PROVENANCE.md#verify-it-yourself)). `build.ps1` is for Windows; on Linux the same
 flags with Linaro's `x86_64` build of the same compiler should work, but that isn't scripted or
 tested.
@@ -274,3 +372,11 @@ tested.
 | PCM always goes through the offload path: four 80 ms buffers at 48 kHz, about 250 ms to the speaker | Queues full buffers; 160 ms head start |
 | The player's volume is linear (`volume / 100`) | Squares `SPEAKER_VOLUME` first |
 | `DEC7 Volume` and `DEC8 Volume` are signed controls: a value below 84 (0 dB) reads back 256 higher | Saves and restores the values as read, and compares against the value read back after muting |
+| A YUV track of its own, the vendor's way to feed VAM (with or without `low_power_mode`), sees only the middle 75% of the picture and doesn't follow the digital zoom | Detection takes a copy of the sub stream's frames (`SourceVideoTrack`), which matches the main stream exactly, at 1x and zoomed |
+| Copies of a 720p sub stream are unreadable at any size: there the camera hands the encoder compressed (UBWC) frames, which `persist.qmmf.ubwcstream.enable=1` allows | Detection needs the sub stream at 640x360, where the frames are plain NV12 |
+| A YUV track's metadata gives each plane's row count as the picture's height, but the planes are padded the video hardware's way: at 640x360 the Y plane has 384 rows, 24 of them empty, and the UV plane (192 rows) follows it | Describes frames with that layout; with the reported one, VAM saw a green band and shifted colours |
+| qmmf draws at most 10 overlays on a track, collected into a fixed array it doesn't check | Boxes get the overlays the on-screen text leaves |
+| A bounding-box overlay is drawn on a surface 480 pixels wide (on a 1080p track), with the box's shape and at least 270 high, and stretched onto the box; once the box is taller than that surface, the label goes above it | Moves a box down when its label would leave the picture, and draws it afresh when its shape changes a lot |
+| `libvam_interface.so.0` uses qmmf's packet queue (`AVFreePacket` and others) without naming its library | `vaidk-detect` loads `libav_queue.so.0` globally first |
+| VAM gives up when it can't open its database (`/data/misc/vam/vamsession_<start time>/events.db`, a new folder at each start), and the camera has no `/data/misc/vam` | `detect.sh` points it at a 4 MB RAM file system |
+| VAM's labels keep the labels file's line ending | Trimmed |

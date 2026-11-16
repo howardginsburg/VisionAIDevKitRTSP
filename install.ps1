@@ -100,7 +100,7 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'device') -Destination $staging 
 try {
     foreach ($file in Get-ChildItem -LiteralPath $staging -Recurse -File) {
         $bytes = [IO.File]::ReadAllBytes($file.FullName)
-        if ([Array]::IndexOf($bytes, [byte]0) -ge 0) { continue }   # binary (camera/vaidk-camd)
+        if ([Array]::IndexOf($bytes, [byte]0) -ge 0) { continue }   # binary (camera/vaidk-camd, detect/vaidk-detect)
         $text = [Text.Encoding]::UTF8.GetString($bytes)
         if ($text.Contains("`r")) { [IO.File]::WriteAllText($file.FullName, $text.Replace("`r`n", "`n")) }
     }

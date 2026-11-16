@@ -5,6 +5,10 @@
 //   stream 2  sub video   (H.264, optional)
 //   stream 3  microphone  (AAC-LC raw access units, optional)
 //
+// With DETECT=1 it also hands copies of the sub stream's frames to the object detector (vaidk-detect)
+// over CAMD_DETECT, at most DETECT_FPS a second, and draws the boxes the detector sends back on the
+// main stream (detect_link.h).
+//
 // In the other direction it plays talk-back audio from the RTSP server's backchannel on the speaker
 // (talkback.cpp). Settings come from environment variables (see device/camera/camd.sh); the ones
 // that can change while streaming are re-read from CAMD_LIVE on SIGHUP, SIGUSR1 plays a test chime,
@@ -17,23 +21,30 @@
 #include <cstring>
 
 #include <qmmf-sdk/qmmf_recorder.h>
+#include <qmmf-sdk/qmmf_recorder_extra_param_tags.h>
 
+#include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "common.h"
+#include "detect_link.h"
 #include "image.h"
 #include "talkback.h"
 
@@ -43,13 +54,18 @@ using namespace qmmf::recorder;
 namespace {
 
 const uint32_t kMagic = 0x4b494156;  // "VAIK"
-enum : uint8_t { kInfo = 0, kMain = 1, kSub = 2, kAudio = 3, kStreams = 4 };
+enum : uint8_t { kInfo = 0, kMain = 1, kSub = 2, kAudio = 3, kDetect = 4, kStreams = 5 };
 enum : uint8_t { kKeyframe = 1, kCodecConfig = 2 };
 const uint32_t kCameraId = 0;
-const uint32_t kTrackIds[kStreams] = {0, 1, 2, 101};
-const char *const kNames[kStreams] = {"info", "main", "sub", "audio"};
+const uint32_t kTrackIds[kStreams] = {0, 1, 2, 101, 3};
+const char *const kNames[kStreams] = {"info", "main", "sub", "audio", "detect"};
 const size_t kQueueLimit = 16u << 20;  // drop frames when the RTSP server falls this far behind
 const uint64_t kStallUs = 10000000;    // restart when an enabled stream stops for this long
+const uint32_t kMaxOverlays = 10;      // qmmf-server draws at most this many on a track (a fixed array, unchecked)
+const uint64_t kBoxesTimeoutUs = 1500000;  // hide the boxes when the detector goes quiet this long (at least)
+// The detector works from copies of the sub stream's frames, which are plain NV12 only at this size: at
+// 720p the camera hands the encoder compressed (UBWC) frames, and the copies are unreadable.
+const uint32_t kDetectWidth = 640, kDetectHeight = 360;
 
 #pragma pack(push, 1)
 struct Header {
@@ -83,7 +99,7 @@ struct Config {
   uint32_t camera_fps, keyframe_seconds, debug;
   bool overlay_time, overlay_name, overlay_sub;
   overlay::OverlayLocationType time_corner, name_corner;
-  std::string name, socket_path, talk_path, on_start, live_path, ptz_path, raw_metadata;
+  std::string name, socket_path, talk_path, on_start, live_path, ptz_path, raw_metadata, detect_path;
   bool dump_metadata;
 };
 
@@ -110,6 +126,10 @@ Config load_config() {
                     env_u32("MAIN_HEIGHT", 1080), env_u32("MAIN_FPS", 30), env_u32("MAIN_BITRATE", 4000000)};
   c.video[kSub] = {env_u32("SUB_ENABLED", 1) == 1, false, env_u32("SUB_WIDTH", 640),
                    env_u32("SUB_HEIGHT", 360), env_u32("SUB_FPS", 5), env_u32("SUB_BITRATE", 500000)};
+  // Uncompressed copies of the sub stream's frames for the object detector, only with DETECT=1. They come
+  // at the sub stream's rate; DETECT_FPS (a live setting) decides how many go to the detector.
+  c.video[kDetect] = {env_u32("DETECT", 0) == 1, false, kDetectWidth, kDetectHeight, c.video[kSub].fps, 0};
+  c.detect_path = env_str("CAMD_DETECT", "/run/vaidk/detect.sock");
   c.audio = env_u32("AUDIO_ENABLED", 1) == 1;
   c.audio_rate = env_u32("AUDIO_RATE", 48000);
   c.audio_channels = env_u32("AUDIO_CHANNELS", 1);
@@ -285,16 +305,247 @@ class Output {
   std::condition_variable cv_;
   std::deque<std::vector<uint8_t>> queue_;
   std::vector<uint8_t> config_[kStreams];
-  bool need_key_[kStreams] = {false, true, true, false};
+  bool need_key_[kStreams] = {false, true, true, false, false};
   size_t queued_ = 0;
   uint64_t dropped_ = 0;
   int fd_ = -1;
   bool stopping_ = false;
 };
 
+bool read_full(int fd, void *buf, size_t size) {
+  uint8_t *p = static_cast<uint8_t *>(buf);
+  while (size) {
+    ssize_t n = recv(fd, p, size, MSG_WAITALL);
+    if (n < 0 && errno == EINTR) continue;
+    if (n <= 0) return false;
+    p += n;
+    size -= size_t(n);
+  }
+  return true;
+}
+
+bool send_full(int fd, const std::vector<uint8_t> &m) {
+  size_t sent = 0;
+  while (sent < m.size()) {
+    ssize_t n = send(fd, m.data() + sent, m.size() - sent, MSG_NOSIGNAL);
+    if (n < 0 && errno == EINTR) continue;
+    if (n <= 0) return false;
+    sent += size_t(n);
+  }
+  return true;
+}
+
+// The connection to the object detector (vaidk-detect; the messages are in detect_link.h). A frame goes
+// to it only after it asked for one, copied out of qmmf's buffer, which goes back at once; the boxes it
+// sends back go to the handler.
+class DetectLink {
+ public:
+  using BoxesFn = std::function<void(const std::vector<detect::Box> &)>;
+  explicit DetectLink(const std::string &path) : path_(path) {}
+
+  void start(BoxesFn on_boxes) {
+    on_boxes_ = std::move(on_boxes);
+    if (pipe2(wake_, O_CLOEXEC | O_NONBLOCK) != 0) {
+      note("object detection unavailable: %s", strerror(errno));
+      return;
+    }
+    thread_ = std::thread([this] { run(); });
+  }
+
+  void stop() {
+    if (!thread_.joinable()) return;
+    stopping_ = true;
+    wake();
+    thread_.join();
+    close(wake_[0]);
+    close(wake_[1]);
+  }
+
+  // Called from qmmf's callback thread; never blocks. Without a request from the detector, or before the
+  // next frame is due, the frame is skipped.
+  void offer(const BufferDescriptor &b, const MetaData *meta, uint32_t width, uint32_t height) {
+    std::lock_guard<std::mutex> lock(lock_);
+    if (fd_ < 0 || credits_ == 0 || !pending_.empty() || !b.data || !b.size) return;
+    // Frames arrive at the sub stream's rate; send them at the chosen one, allowing for some jitter.
+    uint64_t now = now_us();
+    if (period_us_ && next_us_ && now + slack_us_ < next_us_) return;
+    detect::FrameInfo info;
+    memset(&info, 0, sizeof(info));
+    info.timestamp = b.timestamp;
+    info.width = width;
+    info.height = height;
+    // qmmf reports the picture's own height as each plane's row count, but the camera pads the planes
+    // the video hardware's way (Y to a multiple of 32 rows, UV to 16), and the UV plane follows Y's
+    // padding: at 640x360, 24 rows of zeros come before it.
+    uint32_t stride = 0;
+    if (meta && (meta->meta_flag & static_cast<uint32_t>(MetaParamType::kCamBufMetaData)))
+      stride = meta->cam_buffer_meta_data.plane_info[0].stride;
+    info.stride[0] = info.stride[1] = stride ? stride : (width + 127) / 128 * 128;
+    info.scanline[0] = (height + 31) / 32 * 32;
+    info.scanline[1] = (height / 2 + 15) / 16 * 16;
+    info.offset[1] = info.stride[0] * info.scanline[0];
+    info.plane_size[0] = info.offset[1];
+    info.plane_size[1] = info.stride[1] * info.scanline[1];
+    if (b.size < info.offset[1] + info.plane_size[1]) {
+      if (!described_) note("detector frames: %u bytes is too small for %ux%u NV12", b.size, width, height);
+      described_ = true;
+      return;
+    }
+    if (!described_) {
+      note("detector frames: %ux%u NV12, %u bytes; stride %u, UV plane after %u rows", width, height, b.size,
+           info.stride[0], info.scanline[0]);
+      described_ = true;
+    }
+    detect::Header h{detect::kMagic, detect::kFrame, 0, uint32_t(sizeof(info) + b.size)};
+    pending_.resize(sizeof(h) + sizeof(info) + b.size);
+    memcpy(pending_.data(), &h, sizeof(h));
+    memcpy(pending_.data() + sizeof(h), &info, sizeof(info));
+    memcpy(pending_.data() + sizeof(h) + sizeof(info), b.data, b.size);
+    next_us_ = next_us_ && now < next_us_ + period_us_ ? next_us_ + period_us_ : now + period_us_;
+    --credits_;
+    ++sent_;
+    wake();
+  }
+
+  // At most `fps` frames a second (0: as many as the detector asks for) from a source of `source_fps`.
+  void set_rate(uint32_t fps, uint32_t source_fps) {
+    std::lock_guard<std::mutex> lock(lock_);
+    period_us_ = fps ? 1000000u / fps : 0;
+    slack_us_ = source_fps ? 500000u / source_fps : 0;
+    next_us_ = 0;
+  }
+
+  uint64_t sent() {
+    std::lock_guard<std::mutex> lock(lock_);
+    return sent_;
+  }
+
+ private:
+  void wake() {
+    char c = 1;
+    ssize_t n = write(wake_[1], &c, 1);
+    (void)n;
+  }
+
+  void drain() {
+    char buf[64];
+    while (read(wake_[0], buf, sizeof(buf)) > 0) {
+    }
+  }
+
+  int connect_socket() {
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -1;
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, path_.c_str(), sizeof(addr.sun_path) - 1);
+    int buffer = 2 << 20;
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buffer, sizeof(buffer));
+    if (connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
+      close(fd);
+      return -1;
+    }
+    return fd;
+  }
+
+  bool receive(int fd) {
+    detect::Header h;
+    if (!read_full(fd, &h, sizeof(h))) return false;
+    if (h.magic != detect::kMagic || h.length > 4 + detect::kMaxBoxes * sizeof(detect::Box)) return false;
+    std::vector<uint8_t> payload(h.length);
+    if (h.length && !read_full(fd, payload.data(), h.length)) return false;
+    uint32_t n = 0;
+    if (h.length >= 4) memcpy(&n, payload.data(), 4);
+    if (h.type == detect::kWant) {
+      std::lock_guard<std::mutex> lock(lock_);
+      credits_ = std::min(credits_ + n, 4u);
+    } else if (h.type == detect::kBoxes && n <= detect::kMaxBoxes && h.length >= 4 + n * sizeof(detect::Box)) {
+      std::vector<detect::Box> boxes(n);
+      if (n) memcpy(boxes.data(), payload.data() + 4, n * sizeof(detect::Box));
+      on_boxes_(boxes);
+    }
+    return true;
+  }
+
+  void run() {
+    bool waiting = false;
+    while (!stopping_) {
+      int fd;
+      {
+        std::lock_guard<std::mutex> lock(lock_);
+        fd = fd_;
+      }
+      if (fd < 0) {
+        fd = connect_socket();
+        if (fd < 0) {
+          if (!waiting) note("waiting for the object detector at %s", path_.c_str());
+          waiting = true;
+          pollfd p{wake_[0], POLLIN, 0};
+          poll(&p, 1, 1000);
+          drain();
+          continue;
+        }
+        waiting = false;
+        std::lock_guard<std::mutex> lock(lock_);
+        fd_ = fd;
+        credits_ = 0;
+        next_us_ = 0;
+        pending_.clear();
+        note("connected to the object detector");
+      }
+      bool sending;
+      {
+        std::lock_guard<std::mutex> lock(lock_);
+        sending = !pending_.empty();
+      }
+      pollfd p[2] = {{fd, short(POLLIN | (sending ? POLLOUT : 0)), 0}, {wake_[0], POLLIN, 0}};
+      if (poll(p, 2, 1000) < 0) continue;
+      if (p[1].revents & POLLIN) drain();
+      bool ok = true;
+      if (p[0].revents & POLLIN) ok = receive(fd);
+      if (ok && (p[0].revents & POLLOUT)) {
+        std::vector<uint8_t> m;
+        {
+          std::lock_guard<std::mutex> lock(lock_);
+          m.swap(pending_);
+        }
+        ok = m.empty() || send_full(fd, m);
+      }
+      if (ok && (p[0].revents & (POLLERR | POLLHUP | POLLNVAL)) && !(p[0].revents & POLLIN)) ok = false;
+      if (!ok) {
+        note("lost the object detector");
+        {
+          std::lock_guard<std::mutex> lock(lock_);
+          close(fd_);
+          fd_ = -1;
+          credits_ = 0;
+          pending_.clear();
+        }
+        on_boxes_({});
+      }
+    }
+    std::lock_guard<std::mutex> lock(lock_);
+    if (fd_ >= 0) close(fd_);
+    fd_ = -1;
+  }
+
+  std::string path_;
+  BoxesFn on_boxes_;
+  std::thread thread_;
+  std::atomic<bool> stopping_{false};
+  int wake_[2] = {-1, -1};
+  std::mutex lock_;
+  int fd_ = -1;
+  uint32_t credits_ = 0;
+  uint64_t period_us_ = 0, slack_us_ = 0, next_us_ = 0;
+  std::vector<uint8_t> pending_;
+  uint64_t sent_ = 0;
+  bool described_ = false;
+};
+
 class Camera {
  public:
-  Camera(const Config &cfg, Output &out) : cfg_(cfg), out_(out) {}
+  Camera(const Config &cfg, Output &out, DetectLink &link) : cfg_(cfg), out_(out), link_(link) {}
 
   bool start() {
     RecorderCb recorder_cb;
@@ -326,6 +577,19 @@ class Camera {
       uint32_t sub_session = 0;
       if (!create_session(&sub_session) || !create_video(sub_session, kSub)) return false;
     }
+    if (cfg_.video[kDetect].enabled) {
+      if (!active_[kSub] || cfg_.video[kSub].width != kDetectWidth || cfg_.video[kSub].height != kDetectHeight) {
+        note("object detection needs the sub stream on at %ux%u; streaming without it", kDetectWidth, kDetectHeight);
+      } else {
+        uint32_t detect_session = 0;
+        if (!create_session(&detect_session)) return false;
+        if (!create_video(detect_session, kDetect)) {
+          note("streaming without object detection");
+          recorder_.DeleteSession(detect_session);
+          sessions_.pop_back();
+        }
+      }
+    }
     for (uint32_t session : sessions_) {
       ret = recorder_.StartSession(session);
       if (ret != 0) return failed("start a session", ret);
@@ -337,7 +601,55 @@ class Camera {
     image_.init();
     if (cfg_.dump_metadata) image_.dump(recorder_, kCameraId);
     add_overlays();
+    uint32_t text = 0;
+    for (auto &o : overlays_)
+      if (o.first == kTrackIds[kMain]) ++text;
+    box_budget_ = text < kMaxOverlays ? kMaxOverlays - text : 0;
     return true;
+  }
+
+  bool detecting() const { return active_[kDetect]; }
+
+  // DETECT_FPS: how many frames a second go to the detector, at most the sub stream's frame rate. Boxes
+  // are hidden when the detector has been quiet for two and a half of those intervals (1.5 s at least).
+  void set_detect_rate(uint32_t fps) {
+    link_.set_rate(fps, cfg_.video[kDetect].fps);
+    std::lock_guard<std::mutex> lock(boxes_lock_);
+    boxes_timeout_us_ = fps ? std::max<uint64_t>(kBoxesTimeoutUs, 2500000u / fps) : kBoxesTimeoutUs;
+  }
+
+  // The detector's boxes, drawn into the main stream with qmmf's bounding-box overlays: as many as the
+  // on-screen text left room for, most important first. The sub stream stays clean for motion detection.
+  void show_boxes(const std::vector<detect::Box> &boxes) {
+    std::lock_guard<std::mutex> lock(boxes_lock_);
+    boxes_at_ = now_us();
+    if (box_debug_ < cfg_.debug && !boxes.empty()) {
+      ++box_debug_;
+      note("debug boxes: %zu from the detector, budget %u, %s", boxes.size(), box_budget_, boxes_on_ ? "on" : "off");
+    }
+    if (!boxes_on_ || !active_[kMain]) {
+      hide_boxes();
+      return;
+    }
+    size_t n = std::min(boxes.size(), size_t(box_budget_));
+    if (box_slots_.size() < n) box_slots_.resize(n);
+    for (size_t i = 0; i < n; ++i) place_box(box_slots_[i], boxes[i]);
+    for (size_t i = n; i < box_slots_.size(); ++i) hide_box(box_slots_[i]);
+  }
+
+  void set_boxes(bool on) {
+    std::lock_guard<std::mutex> lock(boxes_lock_);
+    boxes_on_ = on;
+    if (!on) hide_boxes();
+  }
+
+  // Hides the boxes once the detector has gone quiet.
+  void expire_boxes() {
+    std::lock_guard<std::mutex> lock(boxes_lock_);
+    if (boxes_at_ && now_us() - boxes_at_ > boxes_timeout_us_) {
+      hide_boxes();
+      boxes_at_ = 0;
+    }
   }
 
   // Applies the image settings, which can change while streaming (CAMD_SET adds raw tags).
@@ -366,6 +678,7 @@ class Camera {
   }
 
   void stop() {
+    delete_boxes();
     for (auto &o : overlays_) {
       recorder_.RemoveOverlay(o.first, o.second);
       recorder_.DeleteOverlayObject(o.first, o.second);
@@ -445,7 +758,7 @@ class Camera {
   TrackCb track_cb(uint8_t stream, uint32_t session) {
     TrackCb cb;
     cb.data_cb = [this, stream, session](uint32_t track, std::vector<BufferDescriptor> buffers,
-                                         std::vector<MetaData>) { on_data(stream, session, track, buffers); };
+                                         std::vector<MetaData> meta) { on_data(stream, session, track, buffers, meta); };
     cb.event_cb = [stream](uint32_t, EventType type, void *, size_t) {
       note("%s track event %d", kNames[stream], int(type));
       g_failed = true;
@@ -455,23 +768,35 @@ class Camera {
 
   bool create_video(uint32_t session, uint8_t stream) {
     const VideoConfig &v = cfg_.video[stream];
-    VideoTrackCreateParam p(kCameraId, v.hevc ? VideoFormat::kHEVC : VideoFormat::kAVC, v.width, v.height,
-                            float(v.fps));
-    if (v.hevc) {
-      p.codec_param.hevc.bitrate = v.bitrate;
-      p.codec_param.hevc.idr_interval = cfg_.keyframe_seconds;
-      p.codec_param.hevc.prepend_sps_pps_to_idr = true;
-      p.codec_param.hevc.insert_aud_delimiter = false;
+    status_t ret;
+    if (stream == kDetect) {
+      // A copy of the sub stream's frames, which shows exactly what the main stream does, zoomed or not.
+      // (A YUV stream of its own sees only the middle 75% of the picture and doesn't follow the zoom.)
+      VideoTrackCreateParam p(kCameraId, VideoFormat::kYUV, v.width, v.height, float(v.fps));
+      VideoExtraParam extra;
+      SourceVideoTrack source;
+      source.source_track_id = int32_t(kTrackIds[kSub]);
+      extra.Update(QMMF_SOURCE_VIDEO_TRACK_ID, source);
+      ret = recorder_.CreateVideoTrack(session, kTrackIds[stream], p, extra, track_cb(stream, session));
     } else {
-      p.codec_param.avc.bitrate = v.bitrate;
-      p.codec_param.avc.idr_interval = cfg_.keyframe_seconds;
-      p.codec_param.avc.prepend_sps_pps_to_idr = true;
-      p.codec_param.avc.insert_aud_delimiter = false;
+      VideoTrackCreateParam p(kCameraId, v.hevc ? VideoFormat::kHEVC : VideoFormat::kAVC, v.width, v.height,
+                              float(v.fps));
+      if (v.hevc) {
+        p.codec_param.hevc.bitrate = v.bitrate;
+        p.codec_param.hevc.idr_interval = cfg_.keyframe_seconds;
+        p.codec_param.hevc.prepend_sps_pps_to_idr = true;
+        p.codec_param.hevc.insert_aud_delimiter = false;
+      } else {
+        p.codec_param.avc.bitrate = v.bitrate;
+        p.codec_param.avc.idr_interval = cfg_.keyframe_seconds;
+        p.codec_param.avc.prepend_sps_pps_to_idr = true;
+        p.codec_param.avc.insert_aud_delimiter = false;
+      }
+      ret = recorder_.CreateVideoTrack(session, kTrackIds[stream], p, track_cb(stream, session));
     }
-    status_t ret = recorder_.CreateVideoTrack(session, kTrackIds[stream], p, track_cb(stream, session));
     if (ret != 0) {
-      note("%s stream %ux%u@%u %s rejected (%d)", kNames[stream], v.width, v.height, v.fps, v.hevc ? "H.265" : "H.264",
-          int(ret));
+      note("%s stream %ux%u@%u %s rejected (%d)", kNames[stream], v.width, v.height, v.fps,
+           stream == kDetect ? "NV12" : v.hevc ? "H.265" : "H.264", int(ret));
       return false;
     }
     video_tracks_.push_back({session, kTrackIds[stream]});
@@ -570,13 +895,19 @@ class Camera {
     return true;
   }
 
-  void on_data(uint8_t stream, uint32_t session, uint32_t track, std::vector<BufferDescriptor> &buffers) {
+  void on_data(uint8_t stream, uint32_t session, uint32_t track, std::vector<BufferDescriptor> &buffers,
+               const std::vector<MetaData> &meta) {
     uint64_t received = now_us();
-    for (const BufferDescriptor &b : buffers) {
-      uint8_t flags = 0;
-      if (b.flag & static_cast<uint32_t>(BufferFlags::kFlagIDRFrame)) flags |= kKeyframe;
-      if (b.flag & static_cast<uint32_t>(BufferFlags::kFlagCodecConfig)) flags |= kCodecConfig;
-      if (b.data && b.size) out_.push(stream, flags, b.timestamp, received, b.data, b.size);
+    for (size_t i = 0; i < buffers.size(); ++i) {
+      const BufferDescriptor &b = buffers[i];
+      if (stream == kDetect) {
+        link_.offer(b, i < meta.size() ? &meta[i] : nullptr, cfg_.video[kDetect].width, cfg_.video[kDetect].height);
+      } else {
+        uint8_t flags = 0;
+        if (b.flag & static_cast<uint32_t>(BufferFlags::kFlagIDRFrame)) flags |= kKeyframe;
+        if (b.flag & static_cast<uint32_t>(BufferFlags::kFlagCodecConfig)) flags |= kCodecConfig;
+        if (b.data && b.size) out_.push(stream, flags, b.timestamp, received, b.data, b.size);
+      }
       std::lock_guard<std::mutex> lock(stats_lock_);
       ++frames_[stream];
       bytes_[stream] += b.size;
@@ -592,20 +923,117 @@ class Camera {
     recorder_.ReturnTrackBuffer(session, track, buffers);
   }
 
+  struct BoxSlot {
+    uint32_t id = 0;
+    bool created = false, shown = false;
+    float aspect = 0;            // the box's width / height when its overlay was created
+    int32_t surface_height = 0;  // the height of qmmf's drawing surface for it
+  };
+
+  // qmmf draws a box's label and outline on a surface sized when the overlay is created (480 wide on a
+  // 1080p stream, with the box's shape, at least 270 high) and scales it onto the box. Once the box is
+  // taller than that surface, the label goes above it (OverlayItemBoundingBox in qmmf-sdk).
+  static int32_t box_surface_height(int32_t w, int32_t h) {
+    float scaled_w = float(w) / 4, scaled_h = float(h) / 4;
+    int32_t width = (int32_t(std::lround(scaled_w)) + 15) / 16 * 16;
+    if (width < 480) width = 480;
+    int32_t height = (int32_t(float(width) / (scaled_w / scaled_h) + 15) >> 4) << 4;
+    return height < 270 ? 270 : height;
+  }
+
+  void place_box(BoxSlot &slot, const detect::Box &box) {  // boxes_lock_ held
+    const int32_t frame_w = int32_t(cfg_.video[kMain].width), frame_h = int32_t(cfg_.video[kMain].height);
+    int32_t w = std::min(std::max(int32_t(box.width) * frame_w / 10000, int32_t(16)), frame_w);
+    int32_t h = std::min(std::max(int32_t(box.height) * frame_h / 10000, int32_t(16)), frame_h);
+    int32_t x = std::min(int32_t(box.x) * frame_w / 10000, frame_w - w);
+    int32_t y = std::min(int32_t(box.y) * frame_h / 10000, frame_h - h);
+    float aspect = float(w) / float(h);
+    // A very different shape would stretch the label: draw it afresh.
+    if (slot.created && (aspect > slot.aspect * 2 || aspect * 2 < slot.aspect)) delete_box(slot);
+    int32_t surface = slot.created ? slot.surface_height : box_surface_height(w, h);
+    int32_t above = (h / surface) * (surface * 20 / 100 + 5);
+    if (y < above) {
+      y = above;
+      if (y + h > frame_h) h = frame_h - y;
+    }
+    overlay::OverlayParam p;
+    memset(&p, 0, sizeof(p));
+    p.type = overlay::OverlayType::kBoundingBox;
+    p.location = overlay::OverlayLocationType::kRandom;
+    p.color = box.color;
+    p.dst_rect.start_x = x;
+    p.dst_rect.start_y = y;
+    p.dst_rect.width = w;
+    p.dst_rect.height = h;
+    strncpy(p.bounding_box.box_name, box.label, std::min(sizeof(box.label), sizeof(p.bounding_box.box_name) - 1));
+    const uint32_t track = kTrackIds[kMain];
+    status_t ret;
+    if (!slot.created) {
+      ret = recorder_.CreateOverlayObject(track, p, &slot.id);
+      if (box_debug_ < cfg_.debug)
+        note("debug box: create %d,%d %dx%d '%s' color %08x -> %d (id %u)", x, y, w, h, p.bounding_box.box_name,
+             p.color, int(ret), slot.id);
+      if (ret != 0) {
+        if (box_errors_++ < 3) note("box overlay failed (%d)", int(ret));
+        return;
+      }
+      slot.created = true;
+      slot.shown = false;
+      slot.aspect = aspect;
+      slot.surface_height = surface;
+    } else {
+      ret = recorder_.UpdateOverlayObjectParams(track, slot.id, p);
+      if (ret != 0 && box_errors_++ < 3) note("box overlay update failed (%d)", int(ret));
+    }
+    if (!slot.shown) {
+      ret = recorder_.SetOverlay(track, slot.id);
+      if (ret == 0) slot.shown = true;
+      if (box_debug_ < cfg_.debug) note("debug box: set %u -> %d", slot.id, int(ret));
+    }
+  }
+
+  void hide_box(BoxSlot &slot) {  // boxes_lock_ held
+    if (slot.shown) recorder_.RemoveOverlay(kTrackIds[kMain], slot.id);
+    slot.shown = false;
+  }
+
+  void hide_boxes() {  // boxes_lock_ held
+    for (BoxSlot &slot : box_slots_) hide_box(slot);
+  }
+
+  void delete_box(BoxSlot &slot) {  // boxes_lock_ held
+    hide_box(slot);
+    if (slot.created) recorder_.DeleteOverlayObject(kTrackIds[kMain], slot.id);
+    slot = BoxSlot();
+  }
+
+  // Overlays must be gone before the sessions stop.
+  void delete_boxes() {
+    std::lock_guard<std::mutex> lock(boxes_lock_);
+    for (BoxSlot &slot : box_slots_) delete_box(slot);
+    box_slots_.clear();
+  }
+
   const Config &cfg_;
   Output &out_;
+  DetectLink &link_;
   Recorder recorder_;
   ImageControl image_;
   bool connected_ = false, camera_started_ = false;
   std::vector<uint32_t> sessions_, started_;
   std::vector<std::pair<uint32_t, uint32_t>> video_tracks_, audio_tracks_, overlays_;
   std::mutex stats_lock_;
-  bool active_[kStreams] = {false, false, false, false};
-  uint64_t frames_[kStreams] = {0, 0, 0, 0}, bytes_[kStreams] = {0, 0, 0, 0}, last_us_[kStreams] = {0, 0, 0, 0};
-  uint32_t debug_left_[kStreams] = {0, 0, 0, 0};
+  bool active_[kStreams] = {false, false, false, false, false};
+  uint64_t frames_[kStreams] = {}, bytes_[kStreams] = {}, last_us_[kStreams] = {};
+  uint32_t debug_left_[kStreams] = {};
   uint64_t started_us_ = 0;
   int64_t clock_offset_us_ = 0;
   bool ptz_logged_ = false;
+  std::mutex boxes_lock_;
+  std::vector<BoxSlot> box_slots_;
+  uint32_t box_budget_ = 0, box_errors_ = 0, box_debug_ = 0;
+  bool boxes_on_ = true;
+  uint64_t boxes_at_ = 0, boxes_timeout_us_ = kBoxesTimeoutUs;
 };
 
 }  // namespace
@@ -627,13 +1055,17 @@ int main() {
 
   Config cfg = load_config();
   Output out(cfg.socket_path);
-  Camera camera(cfg, out);
+  DetectLink link(cfg.detect_path);
+  Camera camera(cfg, out, link);
   Talkback talk;
-  // The settings that can change while streaming: image controls and the speaker.
+  // The settings that can change while streaming: image controls, the speaker, the boxes and how often
+  // frames go to the detector.
   auto apply_live = [&cfg, &camera, &talk] {
     std::map<std::string, std::string> live = read_settings(cfg.live_path);
     camera.apply_image(live);
     talk.configure(parse_int(live["SPEAKER_VOLUME"], 80), live["TALKBACK_MUTE_MIC"] != "0");
+    camera.set_boxes(live["DETECT_BOXES"] != "0");
+    camera.set_detect_rate(uint32_t(std::max(0, parse_int(live["DETECT_FPS"], 5))));
   };
 
   int status = 0;
@@ -647,6 +1079,8 @@ int main() {
     if (talk.start(cfg.talk_path) && !cfg.talk_path.empty()) info += "talk=" + cfg.talk_path + "\n";
     // Frames that arrive before the connection is up are dropped; codec headers are kept.
     out.start(info);
+    if (camera.detecting())
+      link.start([&camera](const std::vector<detect::Box> &boxes) { camera.show_boxes(boxes); });
     std::string summary = info;
     for (char &ch : summary)
       if (ch == '\n') ch = ';';
@@ -660,6 +1094,7 @@ int main() {
       if (g_reload.exchange(false)) apply_live();
       if (g_chime.exchange(false)) talk.chime();
       if (g_ptz.exchange(false)) camera.apply_ptz(cfg.ptz_path);
+      camera.expire_boxes();
       if (const char *name = camera.stalled()) {
         note("no frames from the %s stream for %llu s; restarting the camera", name,
              static_cast<unsigned long long>(kStallUs / 1000000));
@@ -667,7 +1102,11 @@ int main() {
         break;
       }
       if (now_us() >= next_stats) {
-        note("%s; dropped %llu", camera.stats().c_str(), static_cast<unsigned long long>(out.dropped()));
+        if (camera.detecting())
+          note("%s; dropped %llu; frames to the detector %llu", camera.stats().c_str(),
+               static_cast<unsigned long long>(out.dropped()), static_cast<unsigned long long>(link.sent()));
+        else
+          note("%s; dropped %llu", camera.stats().c_str(), static_cast<unsigned long long>(out.dropped()));
         next_stats = now_us() + stats_every;
       }
     }
@@ -681,6 +1120,7 @@ int main() {
     _exit(1);
   }).detach();
   talk.stop();
+  link.stop();
   camera.stop();
   out.stop();
   note("stopped");

@@ -3,7 +3,7 @@
 # vaidk-camd sends the streams to the RTSP server (rtspd.py) and exits when the camera pipeline
 # fails; vaidk-camera.service then starts it again with a fresh camera session.
 #   camd.sh          start vaidk-camd (vaidk-camera.service runs this)
-#   camd.sh reload   apply the settings that change while streaming: picture and speaker
+#   camd.sh reload   apply the settings that change while streaming: picture, speaker and detection boxes
 #   camd.sh chime    play a test chime on the speaker
 #   camd.sh tz       put TIME_ZONE into qmmf-server's environment (restarts it if it changed)
 . /opt/vaidk/common.sh
@@ -14,9 +14,9 @@ TZ_DROPIN=/lib/systemd/system/qmmf-server.service.d/vaidk.conf
 
 write_live() { # the settings vaidk-camd re-reads on SIGHUP
     mkdir -p "$RUN_DIR"
-    printf 'ANTIFLICKER=%s\nEXPOSURE_EV=%s\nWHITE_BALANCE=%s\nSATURATION=%s\nSHARPNESS=%s\nSPEAKER_VOLUME=%s\nTALKBACK_MUTE_MIC=%s\n' \
+    printf 'ANTIFLICKER=%s\nEXPOSURE_EV=%s\nWHITE_BALANCE=%s\nSATURATION=%s\nSHARPNESS=%s\nSPEAKER_VOLUME=%s\nTALKBACK_MUTE_MIC=%s\nDETECT_FPS=%s\nDETECT_BOXES=%s\n' \
         "$ANTIFLICKER" "$EXPOSURE_EV" "$WHITE_BALANCE" "$SATURATION" "$SHARPNESS" "$SPEAKER_VOLUME" "$TALKBACK_MUTE_MIC" \
-        > "$LIVE_FILE.tmp" && mv "$LIVE_FILE.tmp" "$LIVE_FILE"
+        "$DETECT_FPS" "$DETECT_BOXES" > "$LIVE_FILE.tmp" && mv "$LIVE_FILE.tmp" "$LIVE_FILE"
 }
 signal_camd() { systemctl kill -s "$1" --kill-who=main vaidk-camera.service 2>/dev/null; return 0; }
 
@@ -74,5 +74,7 @@ export CAMD_LIVE="$LIVE_FILE"
 # Digital pan, tilt and zoom, written by the ONVIF service (vaidk-onvif); vaidk-camd re-reads it on SIGUSR2.
 export CAMD_PTZ="$RUN_DIR/ptz.conf"
 if [ "$TALKBACK" = 1 ]; then export CAMD_TALK="$RUN_DIR/talk.sock"; fi
+# Object detection: copies of the sub stream's frames go to vaidk-detect (detect/detect.sh) over this socket.
+export DETECT CAMD_DETECT="$RUN_DIR/detect.sock"
 export CAMD_ON_START="/bin/sh $VAIDK_DIR/camera/mic.sh"
 exec "$VAIDK_DIR/camera/vaidk-camd"

@@ -37,7 +37,7 @@ session. Players stay connected to the RTSP server meanwhile and pick up again a
 
 | Command | What it does | Used by |
 |---|---|---|
-| `camd.sh reload` | Rewrites `/run/vaidk/camd.conf` from the settings and sends `vaidk-camd` `SIGHUP`, which applies the picture and speaker settings without restarting the streams | The setup page's **Picture** and **Talk-back** sections |
+| `camd.sh reload` | Rewrites `/run/vaidk/camd.conf` from the settings and sends `vaidk-camd` `SIGHUP`, which applies the picture, speaker and object-detection settings without restarting the streams | The setup page's **Picture**, **Talk-back** and **Object detection** sections |
 | `camd.sh chime` | Sends `vaidk-camd` `SIGUSR1`, which plays a short chime on the speaker | **Test speaker** |
 | `camd.sh tz` | Puts `TIME_ZONE` into `qmmf-server`'s environment and restarts `qmmf-server` if it changed ([Time zone](#time-zone)) | **On-screen text**, and the installer |
 
@@ -68,6 +68,8 @@ this service or, for the live settings, runs `camd.sh reload`.
 | `TALKBACK` | `1`: offer the talk-back channel and play it on the speaker | Restart |
 | `SPEAKER_VOLUME` | Speaker volume, 0 to 100, on an audio taper | Live |
 | `TALKBACK_MUTE_MIC` | `1`: mute the microphones while the speaker plays | Live |
+| `DETECT` | `1`: hand copies of the sub stream's frames to the [object detector](../detect/README.md) and draw its boxes on the main stream. Needs the sub stream on at 640x360 | Restart |
+| `DETECT_FPS`, `DETECT_BOXES` | Frames a second for the detector (at most the sub stream's frame rate); `0` hides the boxes | Live |
 | `STOP_IPC_WEBSERVER` | Keep the vendor preview server stopped | Restart |
 
 Tested combinations:
@@ -76,6 +78,8 @@ Tested combinations:
 |---|---|
 | 1920x1080 at 15 or 30 fps, up to 8 Mbps, H.264 or H.265 | 640x360 or 1280x720, 5 or 10 fps |
 | 3840x2160 at 30 fps, 8 Mbps, H.264 or H.265 | 1280x720, 5 or 10 fps |
+
+With object detection on, the sub stream is 640x360; detection was tested with it at 5 and 10 fps.
 
 The on-screen text was tested at 1080p and at 4K, and the streams kept their frame rates. At 1080p
 it made no measurable difference to `qmmf-server`'s CPU use, about 20% of the camera's two cores
@@ -148,6 +152,8 @@ cat /run/vaidk/rtsp.status                        # what the RTSP server receive
 | `talk-back: speaker off after 4.2 s` | A second without talk-back audio; the speaker track closed |
 | `talk-back: failed to ...` | The speaker couldn't be opened; it tries again with the next audio |
 | `no frames from the main stream for 10 s; restarting the camera` | A stall; systemd restarts it |
+| `connected to the object detector`, `lost the object detector` | The link to [vaidk-detect](../detect/README.md) came up or went; it tries again every second. Boxes hide while it is down |
+| `object detection needs the sub stream on at 640x360; streaming without it` | `DETECT=1`, but the sub stream is off or another size |
 | `camera service event 1 (server died)` | `qmmf-server` restarted; this program restarts too |
 | `microphone unavailable; streaming without audio` | The microphone track couldn't be created |
 | `main stream 3840x2160@30 H.265 rejected (<code>)` | `qmmf-server` refused that track. Choose another setting |

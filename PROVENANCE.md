@@ -26,6 +26,7 @@ Every piece of the add-on is one of three kinds:
 - [RTSP streams](#rtsp-streams)
 - [Talk-back, picture and on-screen text](#talk-back-picture-and-on-screen-text)
 - [Pan, tilt and zoom](#pan-tilt-and-zoom)
+- [Object detection](#object-detection)
 - [How it was tested](#how-it-was-tested)
 - [Status lights](#status-lights)
 - [Restart after a crash](#restart-after-a-crash)
@@ -120,7 +121,8 @@ own qmmf client libraries.
 
 **On the stock camera**, Qualcomm's camera service, `qmmf-server`, ran the sensor, the encoders and
 the microphones. Its clients were the vendor's media server, `qmmf-webserver` (RTSP, and an HTTP API
-on port 4000 that the IoT Edge samples drove), and the preview server, `ipc-webserver` (port 1080).
+on port 4000), and the preview server, `ipc-webserver` (port 1080). The IoT Edge samples drove the
+camera through `ipc-webserver`'s API, which passed their requests on to port 4000.
 
 **In the way.** Those two were the only way to get video and sound out, and neither suits an NVR:
 
@@ -319,6 +321,67 @@ library both use, `onvif-zeep-async` (Frigate pins 4.0; Home Assistant uses the 
 **Snapshots** were tried first, for ONVIF's snapshot URL, and dropped: every way of taking a still
 picture disturbed or broke the streams
 ([ASSESSMENT.md](ASSESSMENT.md#features-beyond-the-streams)).
+
+## Object detection
+
+**Files**: `camd/detect.cpp`, `camd/detect_link.h`, the detector link and boxes in `camd/camd.cpp`,
+`device/detect/` (`detect.sh`, `objects.txt`, the unit, and `vaidk-detect`, built from `camd/`), and
+the **Object detection** section of `device/web/ui.sh`. Authored. `camd/third_party/qmmf-webserver/`
+is [downloaded](#downloaded). The detector runs the camera's own video analytics libraries and the
+vendor's model, [from the device](#from-the-device).
+
+**On the stock camera**, Microsoft's vision sample, an IoT Edge module, asked `ipc-webserver` for
+video analytics with its model. The request reached `qmmf-webserver`, which created an uncompressed
+track of its own in `qmmf-server` and handed its frames to Qualcomm's video analytics manager (VAM).
+VAM's ML engine ran the model with SNPE on the DSP; the results went back to the sample, and
+`qmmf-webserver` drew them as boxes on a stream.
+
+**In the way.**
+
+| Problem | Effect |
+|---|---|
+| The sample is an IoT Edge module, and IoT Edge doesn't start without IoT Hub | The vendor's way to run detection is gone |
+| The vendor servers can't run beside the add-on: `ipc-webserver` competes for the camera, and `qmmf-webserver` has an open API and crashes ([camera and microphone](#camera-and-microphone)) | Nothing else on the camera drives VAM |
+| VAM is a closed library | No documented way to call it. But Qualcomm published the interface its media server used, `qmmf_vam_interface.h` (BSD-3-Clause), with `qmmf-webserver`'s source; the camera's `libvam_interface.so.0` implements it |
+| VAM's own way of being fed, a YUV track of its own, sees only the middle 75% of the picture and doesn't follow the digital zoom | Boxes wouldn't line up with the main stream |
+| The model is in the sample's Docker image, not among the firmware's files | It has to be found and copied |
+
+**What the add-on does.** A second program, `vaidk-detect`, loads VAM through the published interface
+and drives it as Qualcomm's media server did. `vaidk-camd` hands it copies of the sub stream's frames
+and draws the boxes it sends back with qmmf's bounding-box overlays, as the media server did.
+`detect.sh` copies the vendor's model once, and points VAM at the add-on's configuration while
+detection is on ([device/detect/README.md](device/detect/README.md)).
+
+| Question | Options | Chosen |
+|---|---|---|
+| Who drives VAM | The vendor servers; `vaidk-camd`; a process of its own | A process of its own: a crash or hang in VAM, SNPE or the DSP leaves the streams running, and systemd restarts it |
+| Which frames | A YUV track of its own, with or without `low_power_mode` (the vendor's way); a copy of the sub stream (`SourceVideoTrack`) | The copy: it matched the main stream exactly, at 1x and zoomed. It is readable only from a 640x360 sub stream |
+| Where the model runs | The DSP; the processor | The DSP: 30 ms a frame, against 1.6 s and more than a core on the processor |
+| Calling SNPE directly | Qualcomm's SNPE SDK headers; VAM's engine | VAM's engine: Qualcomm no longer offers the SNPE 1.x SDK, and the engine makes those calls itself |
+| The engine's configuration | The vendor's default; Microsoft's sample's | The sample's: a seated person's median confidence was 75%, against 53% with the vendor's |
+| How boxes are drawn | Into the video by qmmf; in the players | qmmf's bounding-box overlays, which every player and recording then shows; at most 10 overlays on a stream |
+| Where the model comes from | Downloaded; the camera | The camera: the sample's Docker image, or the copy of it on the system partition, checked against its SHA-256 |
+
+Tested on the camera, streaming to Frigate:
+
+| Test | Result |
+|---|---|
+| The header's virtual methods against `libvam_interface.so.0`'s vtable (`readelf` on the PC) | The same order, `InitVAM` to `DatabaseCommand`, then the destructors |
+| Loading and starting VAM | SNPE 1.25.0, with its DSP and CPU runtimes available; VAM started in 0.7 s |
+| A frame saved by the detector and converted on the PC, with the layout qmmf reports and with the video hardware's padding | Reported: a green band and shifted colours. Padded: right |
+| Framing: the vendor-style track (with and without `low_power_mode`) and the sub stream's copy against the main stream, at 1x and 1.6x zoom, matched by feature points | Own track: the middle 75%, not following the zoom. Copy: the main stream's picture |
+| A 720p sub stream, copied at 640x360 and at 1280x720 | Noise in 64-pixel columns, both times: compressed frames |
+| Accuracy, with a person seated in view, 60 s each | DSP with the sample's configuration: found in 95% of analyses, median confidence 75.5%. Processor: 100%, median 77. DSP with the vendor's: median 53 |
+| Made-up boxes added to every result, with and without the on-screen text | 6 and 10 boxes shown; `qmmf-server` steady at 84% of a core |
+| The detector killed (`kill -9`) | The streams carried on, the boxes went within 1.5 s, and the link came back when the detector started again (VAM in 0.7 s) |
+| The camera service restarted under a running detector | The detector carried on and reconnected |
+| A 10 fps sub stream at 5, then 10, analyses a second | 5.0 and 10.2 a second; the processor 37% and 39% busy |
+| 35 minutes, then 15 more, at 5 a second | 15,177 analyses; none refused or dropped; no restarts; the memory of all three programs flat; 0 KB written to flash |
+| The setup page: on; other objects and confidence; 2 a second; boxes off; off; a 720p sub stream, then on | Each as described in the README. Turning it on set the sub stream back to 640x360; turning it off put the vendor's files back and the DSP's restart level to `SYSTEM` |
+| A restart with detection on | The detector started 0.8 s after `/data` was mounted; VAM started in 1.0 s |
+| The model copied from the system partition's copy, with the Docker image hidden | Found, copied and checked in 2 s |
+
+Not tested: a DSP crash, which should restart the DSP and the detector rather than the camera.
 
 ## How it was tested
 
@@ -600,6 +663,8 @@ The camera's own software. None of it is committed to this repository.
 | The vendor boot script, `/vendor/etc/camera/InitCamx` | Read on the camera by `make-initcamx.py`; the result, `InitCamx.vaidk`, stays on the camera | The vendor's boot sequence, without the IoT Hub step |
 | `libqmmf_recorder_client.so`, `libqmmf_player_client.so`, `libcamera_client.so.0`, `libcamera_metadata.so.0` | Copied by `build.ps1` to the build cache on your PC (`%LOCALAPPDATA%\vaidk-build`), only to link against | `vaidk-camd` calls `qmmf-server`'s recorder and player, and reads and writes the camera's request settings, through them |
 | `qmmf-server`, the camera and audio HALs, the sensor driver, the DSP firmware | Used in place | The camera, the encoders, the microphones and the speaker |
+| `libvam_interface.so.0`, `libav_queue.so.0`, the video analytics manager (`libVAManager.so`), its ML engine (`/usr/lib/vam_engines/libEngine_ML.so.0`) and SNPE (`libSNPE.so`, `libsnpe_dsp_*_skel.so`) | Loaded in place by `vaidk-detect` | The object detector |
+| The vision sample's model and labels (`mobilenet-SSD.dlc`, `coco_labels.txt`), in its Docker image or in `/etc/Preload_container/visionsamplemodule.tar` | Copied on the camera to `/data/misc/vaidk/models/builtin` and checked against their SHA-256; they never leave it | The object detector's model |
 | `altekflow`, `wifimonitor` | Used in place | The lights, the power button, the battery protection |
 | `leprop-service`, and the saved properties file, `/systemrw/build.prop` | Used in place. While the add-on runs, the file is a copy in RAM, saved back when it changes | The vendor's programs keep their saved properties there |
 | `wpa_supplicant`, `udhcpc`, `startvirtualsoftap`, `hostapd`, `dnsmasq` | Used in place | Wi-Fi and the setup network |
@@ -612,31 +677,35 @@ Each is fetched at a version pinned in one place, named in the third column.
 
 | Component | Source | Pinned in | Licence | Used for |
 |---|---|---|---|---|
-| `qmmf-sdk` headers and `NOTICE` | [CodeLinaro `qmmf-sdk`](https://git.codelinaro.org/clo/le/platform/vendor/qcom-opensource/qmmf-sdk), tag `LE.UM.2.3.3.r1-04300-QCS605.0`, commit `3182154cb6e384f9ce9d2388f6f4005ae28123d0` | `camd/third_party/qmmf-sdk/` (unchanged copies) | BSD-3-Clause, © The Linux Foundation | Compiling `vaidk-camd` |
-| Linaro GCC 6.5-2018.12, `i686-mingw32_arm-linux-gnueabihf` | Arm's archive of legacy Linaro toolchains | `camd/build.ps1` (URL and MD5) | GPL-3.0 and others. What it builds is covered by the GCC Runtime Library Exception | Building `vaidk-camd`; never committed |
+| `qmmf-sdk` headers and `NOTICE` | [CodeLinaro `qmmf-sdk`](https://git.codelinaro.org/clo/le/platform/vendor/qcom-opensource/qmmf-sdk), tag `LE.UM.2.3.3.r1-04300-QCS605.0`, commit `3182154cb6e384f9ce9d2388f6f4005ae28123d0` | `camd/third_party/qmmf-sdk/` (unchanged copies) | BSD-3-Clause, © The Linux Foundation | Compiling `vaidk-camd` and `vaidk-detect` |
+| `qmmf_vam_interface.h` | [CodeLinaro `qmmf-webserver`](https://git.codelinaro.org/clo/le/platform/vendor/qcom-opensource/qmmf-webserver), tag `LE.UM.2.3.3.r1-04300-QCS605.0`, commit `e575fd3895932a1a15ff75e334667e9ef2057da5`, `vaminterface/inc/` | `camd/third_party/qmmf-webserver/include/` (an unchanged copy). Its `NOTICE` is the licence from the header's own comment: the repository has no `NOTICE` file | BSD-3-Clause, © The Linux Foundation | Compiling `vaidk-detect` |
+| Linaro GCC 6.5-2018.12, `i686-mingw32_arm-linux-gnueabihf` | Arm's archive of legacy Linaro toolchains | `camd/build.ps1` (URL and MD5) | GPL-3.0 and others. What it builds is covered by the GCC Runtime Library Exception | Building `vaidk-camd` and `vaidk-detect`; never committed |
 
 ### Authored
 
 Everything else: `install.ps1`, `install.sh`, `device/` (scripts, units, the setup page, the light
-stand-in, `defaults.conf`, and `vaidk-camd` as built from `camd/`), the sources in `camd/`
-(`camd.cpp`, `image.cpp`, `talkback.cpp`, their headers and `common.h`), `camd/build.ps1`,
-`camd/android/`, and the documents. `camd/android/camera/CameraMetadata.h` declares only what
-`vaidk-camd` calls, with the names and layouts the camera libraries' exported symbols and Android 7's
-published API require; it was written for this project rather than copied from Android's sources.
+stand-in, `defaults.conf`, `detect/objects.txt`, and `vaidk-camd` and `vaidk-detect` as built from
+`camd/`), the sources in `camd/` (`camd.cpp`, `image.cpp`, `talkback.cpp`, `detect.cpp`, their
+headers, `detect_link.h` and `common.h`), `camd/build.ps1`, `camd/android/`, and the documents.
+`camd/android/camera/CameraMetadata.h` declares only what `vaidk-camd` calls, with the names and
+layouts the camera libraries' exported symbols and Android 7's published API require; it was written
+for this project rather than copied from Android's sources. `detect/objects.txt` lists the objects in
+the model's labels file that it can report.
 
 ## Licences and what must not be shared
 
 Nothing from a camera is ever committed: the vendor boot script is edited on each camera, Qualcomm's
-client libraries stay in your build cache, and settings, Wi-Fi networks and passwords stay on the
-camera. [.gitignore](.gitignore) keeps such files, and recordings, out of the repository even if
-they are copied into its folder.
+client libraries stay in your build cache, the object detector's model is copied only on the camera,
+and settings, Wi-Fi networks and passwords stay on the camera. [.gitignore](.gitignore) keeps such
+files, and recordings, out of the repository even if they are copied into its folder.
 
 | Component | Licence | OK to share |
 |---|---|---|
 | The add-on: its scripts, the setup page, the sources in `camd/`, `build.ps1`, `android/`, the documents | MIT ([LICENSE](LICENSE)) | Yes |
-| `camd/third_party/qmmf-sdk/` | BSD-3-Clause, © The Linux Foundation. Keep its `NOTICE` with it | Yes, with the `NOTICE` |
-| `device/camera/vaidk-camd` | Built from `camd/`, including the qmmf headers. GCC's runtime parts are covered by the GCC Runtime Library Exception | Yes, with the qmmf `NOTICE` |
+| `camd/third_party/qmmf-sdk/`, `camd/third_party/qmmf-webserver/` | BSD-3-Clause, © The Linux Foundation. Keep each `NOTICE` with it | Yes, with the `NOTICE` |
+| `device/camera/vaidk-camd`, `device/detect/vaidk-detect` | Built from `camd/`, including the qmmf headers. GCC's runtime parts are covered by the GCC Runtime Library Exception | Yes, with the qmmf `NOTICE` files |
 | The four camera libraries in your build cache | The camera's binaries; no licence published | **Keep local.** Never commit them |
+| The vision sample's model and labels | Shipped by Microsoft inside the sample's image; no licence for them was found | **Keep on the camera.** The add-on copies them only there |
 | The vendor boot script, and `InitCamx.vaidk` built from it | No licence | **Keep on the camera.** This repository carries only the edits |
 | The Linaro toolchain | GPL-3.0 and others | Not committed: `build.ps1` downloads it from Arm |
 | `/data/misc/vaidk` on the camera | Your settings, your Wi-Fi network's key hash, your admin account | **Keep private** |
@@ -657,12 +726,19 @@ git -C /tmp/qmmf-sdk rev-parse HEAD     # 3182154cb6e384f9ce9d2388f6f4005ae28123
 git diff --no-index --ignore-cr-at-eol /tmp/qmmf-sdk/include/qmmf-sdk camd/third_party/qmmf-sdk/include/qmmf-sdk
 git diff --no-index --ignore-cr-at-eol /tmp/qmmf-sdk/NOTICE camd/third_party/qmmf-sdk/NOTICE
 #    Both diffs print nothing.
+
+# 3. So is the video analytics interface:
+git clone -q --depth 1 --branch LE.UM.2.3.3.r1-04300-QCS605.0 \
+  https://git.codelinaro.org/clo/le/platform/vendor/qcom-opensource/qmmf-webserver.git /tmp/qmmf-webserver
+git -C /tmp/qmmf-webserver rev-parse HEAD     # e575fd3895932a1a15ff75e334667e9ef2057da5
+git diff --no-index --ignore-cr-at-eol /tmp/qmmf-webserver/vaminterface/inc/qmmf_vam_interface.h \
+  camd/third_party/qmmf-webserver/include/qmmf_vam_interface.h      # prints nothing
 ```
 
 ```powershell
-# 3. vaidk-camd rebuilds byte for byte (Windows PowerShell; the first build needs the camera on USB).
-#    build.ps1 checks the toolchain it downloads against Linaro's published MD5.
-.\camd\build.ps1 -Output $env:TEMP\vaidk-camd
-(Get-FileHash $env:TEMP\vaidk-camd).Hash
-(Get-FileHash device\camera\vaidk-camd).Hash    # the same hash
+# 4. vaidk-camd and vaidk-detect rebuild byte for byte (Windows PowerShell; the first build needs the
+#    camera on USB). build.ps1 checks the toolchain it downloads against Linaro's published MD5.
+.\camd\build.ps1 -Output $env:TEMP\vaidk-camd -DetectOutput $env:TEMP\vaidk-detect
+(Get-FileHash $env:TEMP\vaidk-camd, device\camera\vaidk-camd).Hash     # the same hash twice
+(Get-FileHash $env:TEMP\vaidk-detect, device\detect\vaidk-detect).Hash # the same hash twice
 ```

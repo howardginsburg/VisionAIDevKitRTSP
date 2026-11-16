@@ -1,0 +1,14 @@
+[Unit]
+Description=Vision AI DevKit object detection (vaidk-detect)
+After=data.mount
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+ExecStart=/bin/sh /opt/vaidk/detect/detect.sh
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

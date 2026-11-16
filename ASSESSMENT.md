@@ -15,7 +15,7 @@ Everything else was read from the camera itself.
 | Board | Vision AI DevKit. The device tree names Qualcomm's "QC605 LC Groot + PM8005 IPC" (IP camera) reference design |
 | SoC | Qualcomm QCS603 in the specifications. The kernel and firmware identify it as QCS605 (`soc_id` 347), the same family, and the firmware is a QCS605 build. Its four CPU cores fit the QCS603: the QCS605 has eight |
 | CPU | 4 cores of Qualcomm's Kryo 300 series (CPU parts `0x802` ×2 and `0x803` ×2), up to 1.71 GHz (cpu0–1) and 1.59 GHz (cpu2–3). 64-bit cores, running a 32-bit ARMv7 kernel and userland |
-| GPU and DSPs | Adreno 615 GPU and Hexagon 685 DSP (specifications). The audio DSP processes the microphones. Qualcomm's SNPE neural-network libraries are installed but unused |
+| GPU and DSPs | Adreno 615 GPU and Hexagon 685 DSP (specifications). The audio DSP processes the microphones; the compute DSP runs Qualcomm's SNPE 1.25 neural-network runtime (`libSNPE.so`), which the add-on's optional object detection uses. There is no GPU path for it: the vendor's boot script renames `libOpenCL.so` |
 | RAM | Linux sees 1.8 GB (`MemTotal` 1,872,296 kB, including 68 MB reserved for CMA). The specifications say 4 GB LPDDR4x |
 | Storage | 16 GB eMMC (`mmcblk0`, 15,388,672 kB) with 66 partitions in A/B slots; slot `_a` active. The datasheet lists a microSD slot; no card was inserted |
 | Camera | Sony IMX334, 8 MP (4K). `qmmf-server` loads its driver, `com.qti.sensor.imx334.so`. Drivers for the IMX290, IMX318, IMX362, IMX386 and IMX577 are also installed |
@@ -121,7 +121,7 @@ worth adding. What was found, and what the add-on does with it:
 | Digital zoom | A crop region on the sensor (`android.scaler.cropRegion`), up to 8x of the 3864x2180 active area, set on running streams; both streams follow, centred or not | **Used:** pan, tilt and zoom over ONVIF, up to 4x |
 | Still pictures | `CaptureImage` reconfigures the camera: each capture stalled the video for 140 to 550 ms, and four in a row left the camera driver stuck until a forced restart. A JPEG video track made `qmmf-server` abort, and zero-shutter-lag mode at 1080p wouldn't start | Not possible alongside the streams; Frigate and Home Assistant take stills from the stream |
 | Rotation and mirroring | qmmf has a rotation parameter, but CamX ignores it at 90 and 180 degrees, portrait sizes make `qmmf-server` abort, and there are no flip or mirror tags | Not possible on this firmware |
-| On-device analytics | Qualcomm's SNPE and video analytics libraries (`libSNPE.so`, `libVAManager.so`, `/usr/lib/vam_engines`), and a MobileNet-SSD model in the vendor's Docker image | Unused: Frigate does detection |
+| On-device analytics | Qualcomm's video analytics manager (VAM: `libvam_interface.so.0`, `libVAManager.so`, an ML engine in `/usr/lib/vam_engines`) and SNPE 1.25 with a DSP runtime. Microsoft's vision sample fed it an SSD MobileNet v1 COCO model, kept in the sample's Docker image and in a copy of that image on the system partition. Qualcomm's media server drove it; Qualcomm published the interface it used (`qmmf_vam_interface.h`, BSD-3-Clause) | **Used, optional:** object detection on the DSP (30 ms a frame), with labelled boxes on the main stream ([device/detect](device/detect/README.md)). Frigate still does its own detection |
 | HDMI | The LT9611 bridge and `weston` | Unused |
 | USB camera | The USB gadget defines UVC (webcam) and UAC2 (USB audio) functions, not enabled | Unused |
 | microSD | A slot, no card | Unused |
@@ -142,8 +142,8 @@ worth adding. What was found, and what the add-on does with it:
 Trade-offs:
 - The firmware stays at v0.5370_Perf: no kernel, OpenSSL or OpenSSH updates.
 - Everything the add-on runs on the camera is a shell script, Python 3.5 (with what is left of its
-  standard library), or a small C++ program built with a GCC 6 toolchain against Qualcomm's qmmf
-  client libraries on this firmware.
+  standard library), or one of two small C++ programs built with a GCC 6 toolchain against
+  Qualcomm's qmmf client libraries and video analytics interface on this firmware.
 - The camera keeps its vendor quirks: an audio calibration step at boot, slow audio timestamps, and a
   camera service that stalls when a stream is added to a running camera. The add-on works around
   each ([PROVENANCE.md](PROVENANCE.md#camera-and-microphone)).

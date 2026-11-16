@@ -12,7 +12,9 @@ DATA_DIR=/data/misc/vaidk
 UNIT_DIR=/lib/systemd/system
 VENDOR_BOOT=/vendor/etc/camera/InitCamx
 # Each component's systemd unit, relative to /opt/vaidk.
-UNITS="camera/vaidk-camera.service rtsp/vaidk-rtsp.service wifi/vaidk-wifi.service web/vaidk-web.service onvif/vaidk-onvif.service recovery/vaidk-recovery.service storage/vaidk-storage.service"
+UNITS="camera/vaidk-camera.service rtsp/vaidk-rtsp.service wifi/vaidk-wifi.service web/vaidk-web.service onvif/vaidk-onvif.service recovery/vaidk-recovery.service storage/vaidk-storage.service detect/vaidk-detect.service"
+# The compiled programs, relative to /opt/vaidk.
+PROGRAMS="camera/vaidk-camd detect/vaidk-detect"
 
 log() { printf '%s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*"; exit 1; }
@@ -50,14 +52,16 @@ install_addon() {
     chown -R root:root "$new"
     find "$new" -type d -exec chmod 755 {} \;
     find "$new" -type f -exec chmod 644 {} \;
-    chmod 755 "$new"/*.sh "$new"/*/*.sh "$new/boot/InitCamx.vaidk" "$new/lights/docker" "$new/camera/vaidk-camd" \
-        "$new"/web/www/cgi-bin/*.cgi
+    chmod 755 "$new"/*.sh "$new"/*/*.sh "$new/boot/InitCamx.vaidk" "$new/lights/docker" "$new"/web/www/cgi-bin/*.cgi
     bash -n "$new/boot/InitCamx.vaidk"
     for script in "$new"/*.sh "$new"/*/*.sh "$new"/web/www/cgi-bin/*.cgi "$new/lights/docker"; do sh -n "$script"; done
     python3 -c "compile(open('$new/rtsp/rtspd.py').read(), 'rtspd.py', 'exec')"
     python3 -c "compile(open('$new/onvif/onvifd.py').read(), 'onvifd.py', 'exec')"
-    [ "$(dd if="$new/camera/vaidk-camd" bs=1 skip=1 count=3 2>/dev/null)" = ELF ] \
-        || die "camera/vaidk-camd is damaged (was it copied as text?)"
+    for program in $PROGRAMS; do
+        [ "$(dd if="$new/$program" bs=1 skip=1 count=3 2>/dev/null)" = ELF ] \
+            || die "$program is damaged (was it copied as text?)"
+        chmod 755 "$new/$program"
+    done
     rm -rf "$VAIDK_DIR"
     mv "$new" "$VAIDK_DIR"
     for unit in $UNITS; do
@@ -89,6 +93,8 @@ install_addon() {
 uninstall_addon() {
     [ "$(id -u)" = 0 ] || die "run this as root (adb shell)"
     stop_services
+    # Object detection points the vendor's video analytics at the add-on's files; put the vendor's back.
+    if [ -f "$VAIDK_DIR/detect/detect.sh" ]; then sh "$VAIDK_DIR/detect/detect.sh" restore || true; fi
     if [ -f "$VAIDK_DIR/web/ui.sh" ]; then sh "$VAIDK_DIR/web/ui.sh" forget || true; fi
     rm -rf "$DATA_DIR"
     root_rw
