@@ -223,6 +223,7 @@ show_message() {
         detect-restart) text="Saved. The streams restart in about 15 seconds; object detection starts a few seconds later." ;;
         detect-sub) text="Saved. Object detection works from the sub stream at 640x360, so it is set to that now: update the detect size in Frigate (see the Frigate section). The streams restart in about 15 seconds." ;;
         mqtt) text="Saved. The MQTT service connects with the new settings in a few seconds." ;;
+        mqtt-saved) text="Saved." ;;
         err-token) err="The page expired. Please try again." ;;
         err-ssid) err="Choose or type a Wi-Fi network name." ;;
         err-wifi-pass) err="Wi-Fi passwords have 8 to 63 characters. Leave it empty only for an open network." ;;
@@ -491,7 +492,9 @@ post_mqtt() {
     if [ -z "$user" ]; then rm -f "$DATA_DIR/mqtt-password"
     elif [ -n "$pass" ]; then (umask 077 && printf '%s' "$pass" > "$DATA_DIR/mqtt-password"); fi
     later "systemctl restart vaidk-mqtt.service"
-    redirect "$SELF?msg=mqtt"
+    # It runs only while detection is on; otherwise the status line says what it waits for.
+    if [ "$mqtt" = 1 ] && [ "$DETECT" = 1 ]; then redirect "$SELF?msg=mqtt"; fi
+    redirect "$SELF?msg=mqtt-saved"
 }
 
 handle_post() {
