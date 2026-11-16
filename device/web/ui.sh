@@ -17,11 +17,14 @@ MODE=$1
 SELF=${SCRIPT_NAME:-/cgi-bin/index.cgi}
 
 h() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\&#39;/g"; }
-has_ctrl() { [ "$(printf '%s' "$1" | tr -d '\001-\037\177' | wc -c)" != "$(printf '%s' "$1" | wc -c)" ]; }
+# (BusyBox tr reads an octal range such as '\001-\037' as three characters, a dash among them: use a class.)
+has_ctrl() { [ "$(printf '%s' "$1" | tr -d '[:cntrl:]' | wc -c)" != "$(printf '%s' "$1" | wc -c)" ]; }
+# matches VALUE ERE: all of VALUE matches (grep -x alone passes a value with a newline if one line does)
+matches() { ! has_ctrl "$1" && printf '%s\n' "$1" | grep -qxE "$2"; }
 
 # ----- admin account (also the SSH login) -----
 
-valid_user() { printf '%s\n' "$1" | grep -qxE '[a-z_][a-z0-9_-]{0,30}' && [ "$1" != root ]; }
+valid_user() { matches "$1" '[a-z_][a-z0-9_-]{0,30}' && [ "$1" != root ]; }
 valid_password() { [ ${#1} -ge 8 ] && [ ${#1} -le 64 ] && ! has_ctrl "$1"; }
 
 in_allow_users() {
@@ -247,7 +250,7 @@ check_wifi() { # check_wifi SSID PASSWORD
     if [ -z "$1" ] || [ ${#1} -gt 32 ] || has_ctrl "$1"; then fail err-ssid; fi
     if [ -n "$2" ] && { [ ${#2} -lt 8 ] || [ ${#2} -gt 63 ] || has_ctrl "$2"; }; then fail err-wifi-pass; fi
 }
-check_name() { printf '%s\n' "$1" | grep -qxE '[A-Za-z0-9][A-Za-z0-9-]{0,31}' || fail err-name; }
+check_name() { matches "$1" '[A-Za-z0-9][A-Za-z0-9-]{0,31}' || fail err-name; }
 save_account() { # save_account USER PASSWORD CONFIRM
     valid_user "$1" || fail err-user
     valid_password "$2" || fail err-pass
@@ -361,7 +364,7 @@ post_overlay() {
     allowed "$pos" "$OVERLAY_POSITION" "top-left top-right bottom-left bottom-right" || fail err-camera
     allowed "$streams" "$OVERLAY_STREAMS" "main both" || fail err-camera
     # Settings are read back by the shell, so only characters that need no quoting.
-    printf '%s\n' "$tz" | grep -qxE '[A-Za-z][A-Za-z0-9+:,./-]{2,63}' || fail err-tz
+    matches "$tz" '[A-Za-z][A-Za-z0-9+:,./-]{2,63}' || fail err-tz
     set_setting OVERLAY "$overlay"; set_setting OVERLAY_POSITION "$pos"; set_setting OVERLAY_STREAMS "$streams"
     set_setting TIME_ZONE "$tz"
     later "sh $VAIDK_DIR/camera/camd.sh tz; systemctl restart vaidk-camera.service"
@@ -403,11 +406,11 @@ post_ptz() {
         full) ptz_local do=full >/dev/null || fail err-ptz ;;
         goto|delete)
             t=$(field token)
-            printf '%s\n' "$t" | grep -qxE '[0-9]{1,3}' || fail err-ptz
+            matches "$t" '[0-9]{1,3}' || fail err-ptz
             ptz_local "do=$action&token=$t" >/dev/null || fail err-ptz ;;
         save)
             name=$(field name)
-            printf '%s\n' "$name" | grep -qxE '[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}' || fail err-ptz-name
+            matches "$name" '[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}' || fail err-ptz-name
             if ! ptz_local "do=save&name=$(printf '%s' "$name" | tr ' ' '+')" >/dev/null; then
                 if ptz_local >/dev/null; then fail err-ptz-full; else fail err-ptz; fi
             fi ;;
