@@ -87,9 +87,10 @@ boot opens the setup network again.
 ## Why it no longer works out of the box
 
 - **Retired.** Microsoft's two Vision AI DevKit repositories are archived:
-  [Azure/Vision-AI-DevKit-Pages](https://github.com/Azure/Vision-AI-DevKit-Pages) (2023-04-12) and
-  [microsoft/vision-ai-developer-kit](https://github.com/microsoft/vision-ai-developer-kit)
-  (2023-06-02).
+  [microsoft/vision-ai-developer-kit](https://github.com/microsoft/vision-ai-developer-kit), the
+  samples and tools (last changed 14 September 2020, archived 5 June 2023), and
+  [Azure/Vision-AI-DevKit-Pages](https://github.com/Azure/Vision-AI-DevKit-Pages), the documentation
+  (content last changed 28 July 2020, archived 12 October 2023).
 - **Setup stops before the IoT Hub step.** On this camera the setup site accepted the Wi-Fi network
   and the SSH account, but never showed the IoT Hub page. `setting.conf` was never written, so the
   camera never joined the Wi-Fi network on its own.

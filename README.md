@@ -1,8 +1,27 @@
 # Vision AI DevKit RTSP camera
 
-Turns a retired Microsoft [Vision AI DevKit](https://azure.github.io/Vision-AI-DevKit-Pages/) into a
-Wi-Fi RTSP camera for [Frigate](https://frigate.video/), Home Assistant, VLC or any NVR. No Azure
-account, IoT Hub or SSH is needed: you install it over USB and finish setup from a phone.
+<p align="center">
+  <img src="images/vision-ai-devkit.png" width="200" alt="The Vision AI DevKit: an upright camera with a black front, the lens at the top and three status lights below it, on a white swivelling stand">
+</p>
+
+The [Vision AI DevKit](https://azure.github.io/Vision-AI-DevKit-Pages/) was Microsoft's developer kit
+for vision AI on Azure: a camera that ran vision models on its own Qualcomm processor, deployed from
+Azure IoT Hub through Azure IoT Edge. Microsoft and Qualcomm
+[announced it](https://azure.microsoft.com/en-us/blog/accelerating-ai-on-the-intelligent-edge-microsoft-and-qualcomm-create-vision-ai-developer-kit/)
+at Microsoft Build in May 2018, and it went on
+[general sale](https://azure.microsoft.com/en-us/blog/microsoft-and-qualcomm-accelerate-ai-with-vision-ai-developer-kit/)
+in September 2019, made by eInfochips and sold by Arrow Electronics.
+
+The kit is retired now. Microsoft last updated its
+[samples and tools](https://github.com/microsoft/vision-ai-developer-kit) and
+[documentation](https://github.com/Azure/Vision-AI-DevKit-Pages) in 2020 and archived both in 2023,
+and the camera gets no more updates. Out of the box, its setup stops before the Azure IoT Hub step,
+so the camera never joins your Wi-Fi network
+([why](ASSESSMENT.md#why-it-no-longer-works-out-of-the-box)).
+
+This project turns it into a Wi-Fi RTSP camera for [Frigate](https://frigate.video/), Home
+Assistant, VLC or any NVR. No Azure account, IoT Hub or SSH is needed: you install it over USB and
+finish setup from a phone.
 
 - **Two RTSP streams:** a main stream for recording (up to 4K at 30 fps) and a low-resolution sub
   stream for detection.
@@ -521,4 +540,7 @@ or any other cloud service.
 [MIT](LICENSE). Qualcomm's `qmmf-sdk` and `qmmf-webserver` headers in `camd/third_party/` are
 BSD-3-Clause; see their NOTICE files ([qmmf-sdk](camd/third_party/qmmf-sdk/NOTICE),
 [qmmf-webserver](camd/third_party/qmmf-webserver/NOTICE)). The object detector's model stays on the
-camera: the add-on copies it from the camera's own software and never distributes it.
+camera: the add-on copies it from the camera's own software and never distributes it. The picture of
+the camera is Microsoft's, from the
+[Vision AI DevKit documentation](https://github.com/Azure/Vision-AI-DevKit-Pages), under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); it is cropped and resized.

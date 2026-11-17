@@ -604,4 +604,5 @@ device/                      everything copied to /opt/vaidk on the camera; devi
   recovery/                  recovery.sh and the unit
   storage/                   storage.sh and the unit
   lights/                    the docker stand-in for altekflow
+images/                      the picture of the camera at the top of README.md (Microsoft's, CC BY 4.0)
 ```

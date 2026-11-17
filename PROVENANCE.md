@@ -825,6 +825,7 @@ Each is fetched at a version pinned in one place, named in the third column.
 | `qmmf-sdk` headers and `NOTICE` | [CodeLinaro `qmmf-sdk`](https://git.codelinaro.org/clo/le/platform/vendor/qcom-opensource/qmmf-sdk), tag `LE.UM.2.3.3.r1-04300-QCS605.0`, commit `3182154cb6e384f9ce9d2388f6f4005ae28123d0` | `camd/third_party/qmmf-sdk/` (unchanged copies) | BSD-3-Clause, © The Linux Foundation | Compiling `vaidk-camd` and `vaidk-detect` |
 | `qmmf_vam_interface.h` | [CodeLinaro `qmmf-webserver`](https://git.codelinaro.org/clo/le/platform/vendor/qcom-opensource/qmmf-webserver), tag `LE.UM.2.3.3.r1-04300-QCS605.0`, commit `e575fd3895932a1a15ff75e334667e9ef2057da5`, `vaminterface/inc/` | `camd/third_party/qmmf-webserver/include/` (an unchanged copy). Its `NOTICE` is the licence from the header's own comment: the repository has no `NOTICE` file | BSD-3-Clause, © The Linux Foundation | Compiling `vaidk-detect` |
 | Linaro GCC 6.5-2018.12, `i686-mingw32_arm-linux-gnueabihf` | Arm's archive of legacy Linaro toolchains | `camd/build.ps1` (URL and MD5) | GPL-3.0 and others. What it builds is covered by the GCC Runtime Library Exception | Building `vaidk-camd` and `vaidk-detect`; never committed |
+| The picture of the camera | [Azure/Vision-AI-DevKit-Pages](https://github.com/Azure/Vision-AI-DevKit-Pages), `docs/assets/images/camera-render-transparent.png`, commit `4f61caf9df31b9be471d748f0823a2bac9dc8136` | `images/vision-ai-devkit.png` (cropped to the camera and its shadow, and resized to 480 pixels wide) | CC BY 4.0, © Microsoft | The top of the README |
 
 ### Authored
 
@@ -850,6 +851,7 @@ files, and recordings, out of the repository even if they are copied into its fo
 | The add-on: its scripts, the setup page, the sources in `camd/`, `build.ps1`, `android/`, the documents | MIT ([LICENSE](LICENSE)) | Yes |
 | `camd/third_party/qmmf-sdk/`, `camd/third_party/qmmf-webserver/` | BSD-3-Clause, © The Linux Foundation. Keep each `NOTICE` with it | Yes, with the `NOTICE` |
 | `device/camera/vaidk-camd`, `device/detect/vaidk-detect` | Built from `camd/`, including the qmmf headers. GCC's runtime parts are covered by the GCC Runtime Library Exception | Yes, with the qmmf `NOTICE` files |
+| `images/vision-ai-devkit.png` | CC BY 4.0, © Microsoft. Credit Microsoft and the licence, and say it was changed | Yes, with the credit ([LICENSE](LICENSE)) |
 | The five camera libraries in your build cache | The camera's binaries; no licence published | **Keep local.** Never commit them |
 | The vision sample's model and labels | Shipped by Microsoft inside the sample's image; no licence for them was found | **Keep on the camera.** The add-on copies them only there |
 | The vendor boot script, and `InitCamx.vaidk` built from it | No licence | **Keep on the camera.** This repository carries only the edits |

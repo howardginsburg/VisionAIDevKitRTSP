@@ -26,6 +26,14 @@ This licence covers the files written for this project. Third-party files keep
 their own licences:
 - camd/third_party/qmmf-sdk: Qualcomm's qmmf-sdk headers, BSD-3-Clause,
   Copyright (c) The Linux Foundation; see camd/third_party/qmmf-sdk/NOTICE.
-- device/camera/vaidk-camd is built from camd/, including those headers, so
-  their BSD-3-Clause notice applies to it too. On the camera it uses
-  Qualcomm's libraries, which are not part of this repository.
+- camd/third_party/qmmf-webserver: Qualcomm's video analytics interface header,
+  BSD-3-Clause, Copyright (c) The Linux Foundation; see
+  camd/third_party/qmmf-webserver/NOTICE.
+- device/camera/vaidk-camd and device/detect/vaidk-detect are built from camd/,
+  including those headers, so their BSD-3-Clause notices apply to them too. On
+  the camera they use Qualcomm's libraries, which are not part of this
+  repository.
+- images/vision-ai-devkit.png: a picture of the Vision AI DevKit by Microsoft,
+  from https://github.com/Azure/Vision-AI-DevKit-Pages
+  (docs/assets/images/camera-render-transparent.png), licensed under
+  CC BY 4.0, https://creativecommons.org/licenses/by/4.0/. Cropped and resized.
