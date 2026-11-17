@@ -143,6 +143,9 @@ HDMI port.
 - **If weston stops,** the display client's next frame aborts `vaidk-camd` (the camera's Wayland
   library gives up on a broken connection); systemd starts it again 3 s later, and `camd.sh` starts
   weston first. Live view was back 11 s after weston was killed.
+- **Stopping weston** makes it die on a signal of its own (SIGTRAP, from its signal handler). Storage
+  upkeep doesn't count that as a crash while `/run/vaidk/hdmi-on` is absent, which `camd.sh` removes
+  before stopping it ([crashes](../storage/README.md#crashes)).
 - **Shutdown.** `vaidk-camera.service` is ordered after `init_display.service`, so the camera stops
   before the display server.
 

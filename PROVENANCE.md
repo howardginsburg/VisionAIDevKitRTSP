@@ -477,11 +477,16 @@ Tested on the camera with a 1080p computer monitor, you watching it, while strea
 | weston killed | `vaidk-camd` stopped too; live view was back 11 s later |
 | On and off from the setup page | On: live view, without the vendor's desktop showing first. Off: weston stopped, compression back on, the monitor without signal |
 | A restart with live view on, then off | On: live view came back by itself. Off: weston never started |
+| weston started and stopped with live view off, then made to crash (`kill -SEGV`) with it on | Stopped: not recorded as a crash. Crashed: recorded (`weston`, signal 5) |
 
 **Found along the way.**
 - **The on-screen clock flickers now and then,** on the monitor and in the RTSP stream alike (6
   single-frame dips in 16 s): `qmmf-server` redraws the text every second. It isn't live view's
   doing.
+- **Stopping weston counted as a crash.** weston dies on a signal of its own (SIGTRAP, from its own
+  signal handler) whenever it is stopped, so each time live view was turned off, storage upkeep
+  recorded a weston crash. It now leaves out a weston crash while live view is off
+  ([crashes](device/storage/README.md#crashes)).
 - **Reading `/sys/kernel/debug/gpio` froze the whole camera:** no lights, network or ADB, and crash
   recovery couldn't act. Holding the power button for 12 to 15 s turned it off, and it started
   normally. Nothing in the add-on reads that file.

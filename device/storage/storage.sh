@@ -128,6 +128,9 @@ case "$1" in
         exec 0<&- # closing the pipe stops the kernel writing the crash dump
         sig=$2
         shift 2
+        # weston dies on a signal of its own whenever it is stopped. camd.sh stops it when HDMI live view is
+        # turned off, after removing the flag: that isn't a crash.
+        if [ "$*" = weston ] && [ ! -e "$RUN_DIR/hdmi-on" ]; then exit 0; fi
         record_crash "$(date +%s)" "$sig" "$*"
         # Through the kernel log: messages that logger sent from here reached syslog but not the journal.
         printf '<12>vaidk-storage: %s crashed (signal %s); no crash dump was kept\n' "$*" "$sig" > /dev/kmsg ;;
