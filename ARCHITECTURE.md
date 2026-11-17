@@ -76,7 +76,7 @@ flowchart TB
 | Object detection | `vaidk-detect.service` | `vaidk-detect` runs the camera's own detector (Qualcomm's video analytics manager and the vendor's model, on the DSP) on frames from `vaidk-camd`, sends back boxes for the main stream, and reports what it sees. Off by default | [device/detect](device/detect/README.md), [camd](camd/README.md#object-detection) |
 | MQTT | `vaidk-mqtt.service` | `mqttd.py` publishes what the detector sees to your MQTT broker, and announces sensors to Home Assistant if you want. Off by default | [device/mqtt](device/mqtt/README.md) |
 | Wi-Fi | `vaidk-wifi.service` | Keeps Wi-Fi connected, opens the setup network when it can't, joins new networks | [device/wifi](device/wifi/README.md) |
-| Setup page | `vaidk-web.service` | First-time setup and settings, on port 80 | [device/web](device/web/README.md) |
+| Setup page | `vaidk-web.service` | First-time setup, and the settings in tabs, on port 80 | [device/web](device/web/README.md) |
 | Crash recovery | `vaidk-recovery.service` | `recovery.sh`, once at boot: turns off Qualcomm's crash-dump mode and has the kernel restart the camera after a crash | [device/recovery](device/recovery/README.md) |
 | Storage upkeep | `vaidk-storage.service` | `storage.sh`: keeps the vendor's properties file in RAM and saves it to flash only when it changes, records crashes without crash dumps, and trims logs in RAM every 10 minutes | [device/storage](device/storage/README.md) |
 | Status lights | The vendor's `altekflow` | A stand-in for `docker` makes the "IoT Hub connected" light mean "streaming" | [device/lights](device/lights/README.md) |
@@ -373,7 +373,7 @@ flowchart LR
 
 | Settings | Read by | Applied |
 |---|---|---|
-| `MAIN_*`, `SUB_*`, `AUDIO_ENABLED`, `AUDIO_BITRATE`, `KEYFRAME_SECONDS` | `camd.sh`, which passes them to `vaidk-camd` | When the camera service restarts. Saving **Camera streams** on the setup page restarts it |
+| `MAIN_*`, `SUB_*`, `AUDIO_ENABLED`, `AUDIO_BITRATE`, `KEYFRAME_SECONDS` | `camd.sh`, which passes them to `vaidk-camd` | When the camera service restarts. Saving **Streams**, or a changed **Microphone**, on the setup page restarts it |
 | `OVERLAY`, `OVERLAY_POSITION`, `OVERLAY_STREAMS`, `TALKBACK` | `camd.sh`, which passes them to `vaidk-camd` | When the camera service restarts. Saving **On-screen text**, or turning talk-back on or off, restarts it |
 | `ANTIFLICKER`, `EXPOSURE_EV`, `WHITE_BALANCE`, `SATURATION`, `SHARPNESS`, `SPEAKER_VOLUME`, `TALKBACK_MUTE_MIC` | `camd.sh`, which writes them to `/run/vaidk/camd.conf` for `vaidk-camd` | At once: saving **Picture** or **Talk-back** runs `camd.sh reload` |
 | `TIME_ZONE` | `camd.sh tz`, which writes it into `qmmf-server`'s drop-in | When `qmmf-server` restarts; `camd.sh tz` restarts it if the value changed |

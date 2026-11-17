@@ -149,17 +149,27 @@ networks() { # networks fresh|cached|auto -> "signal<TAB>ssid" lines
 
 # ----- CGI plumbing -----
 
-page_start() { # page_start TITLE [REFRESH_SECONDS]
+page_start() { # page_start TITLE [REFRESH_SECONDS]: up to <body>; the caller opens <main>
     printf 'Content-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\n\r\n'
     printf '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="same-origin">'
     if [ -n "$2" ]; then printf '<meta http-equiv="refresh" content="%s">' "$2"; fi
-    printf '<title>%s</title><link rel="stylesheet" href="/style.css"></head><body><main>\n' "$(h "$1")"
+    printf '<title>%s</title><link rel="stylesheet" href="/style.css"></head><body>\n' "$(h "$1")"
 }
 page_end() { printf '</main></body></html>\n'; }
+notice_start() { page_start "$@"; printf '<main class="narrow"><section class="card">'; } # a page with one short message
+notice_end() { printf '</section>'; page_end; }
 # Status lines are written in full: this busybox httpd turns "Status: 303 ..." into
 # "HTTP/1.0  303 ..." (two spaces), which strict HTTP clients reject.
 redirect() { printf 'HTTP/1.0 303 See Other\r\nLocation: %s\r\n\r\n' "$1"; exit 0; }
-fail() { redirect "$SELF?msg=$1"; }
+back() { # back [MSG]: to the tab and card the form was posted from (BACK_P, BACK_S), showing MSG there
+    _url="$SELF?"
+    if [ -n "$BACK_P" ]; then _url="${_url}p=$BACK_P&"; fi
+    if [ -n "$BACK_S" ]; then _url="${_url}s=$BACK_S&"; fi
+    _url="${_url}msg=$1"
+    if [ -n "$BACK_S" ]; then _url="$_url#$BACK_S"; fi
+    redirect "$_url"
+}
+fail() { back "$1"; }
 
 read_form() {
     len=${CONTENT_LENGTH:-0}
@@ -177,9 +187,12 @@ token() {
     fi
     cat "$RUN_DIR/csrf"
 }
-form_start() { # form_start ACTION [CLASS]
-    printf '<form method="post" action="%s"%s><input type="hidden" name="t" value="%s"><input type="hidden" name="action" value="%s">' \
-        "$SELF" "${2:+ class=\"$2\"}" "$(token)" "$1"
+form_start() { # form_start ACTION [CLASS] [ID]: posting it returns to this tab and card (PAGE, SECTION)
+    printf '<form method="post" action="%s"%s%s><input type="hidden" name="t" value="%s"><input type="hidden" name="action" value="%s">' \
+        "$SELF" "${2:+ class=\"$2\"}" "${3:+ id=\"$3\"}" "${TOKEN:-$(token)}" "$1"
+    if [ -n "$PAGE" ]; then
+        printf '<input type="hidden" name="p" value="%s"><input type="hidden" name="s" value="%s">' "$PAGE" "$SECTION"
+    fi
 }
 option() { # option VALUE LABEL CURRENT
     if [ "$1" = "$3" ]; then printf '<option value="%s" selected>%s</option>' "$1" "$2"
@@ -203,8 +216,25 @@ allowed() { # allowed VALUE CURRENT "LIST": VALUE is one of the words in LIST, o
     return 1
 }
 item() { printf '<dt>%s</dt><dd>%s</dd>' "$1" "$(h "$2")"; }
-item_code() { printf '<dt>%s</dt><dd><code>%s</code></dd>' "$1" "$(h "$2")"; }
 later() { setsid sh -c "$1" </dev/null >/dev/null 2>&1 & }
+hint() { printf '<p class="hint">%s</p>' "$1"; }                                         # hint HTML
+more() { printf '<details class="more"><summary>%s</summary><p>%s</p></details>' "$1" "$2"; } # more SUMMARY HTML
+onoff() { if [ "$1" = 1 ]; then echo "on On"; else echo "off Off"; fi; } # a badge (class, text) for a 0/1 setting
+save_row() { # save_row LABEL [NOTE]: the form's button, and a note beside it
+    printf '<div class="actions"><button>%s</button>' "$1"
+    if [ -n "$2" ]; then printf '<span class="hint">%s</span>' "$2"; fi
+    printf '</div>'
+}
+# section_start ID TITLE [BADGE_CLASS BADGE_TEXT...]: a card. Its forms return to it when posted, and it
+# shows their message.
+section_start() {
+    SECTION=$1
+    printf '<section class="card" id="%s"><div class="card-head"><h2>%s</h2>' "$1" "$2"
+    if [ $# -ge 4 ]; then _bc=$3; shift 3; printf '<span class="badge %s">%s</span>' "$_bc" "$*"; fi
+    printf '</div>'
+    if [ -n "$MSG_S" ] && [ "$MSG_S" = "$SECTION" ]; then show_message; fi
+}
+section_end() { printf '</section>'; }
 
 show_message() {
     case "$(qparam msg)" in
@@ -225,6 +255,7 @@ show_message() {
         mqtt) text="Saved. The MQTT service connects with the new settings in a few seconds." ;;
         mqtt-saved) text="Saved." ;;
         hdmi) text="Saved." ;;
+        saved) text="Saved." ;;
         err-token) err="The page expired. Please try again." ;;
         err-ssid) err="Choose or type a Wi-Fi network name." ;;
         err-wifi-pass) err="Wi-Fi passwords have 8 to 63 characters. Leave it empty only for an open network." ;;
@@ -315,7 +346,6 @@ post_wifi() {
 post_camera() {
     res=$(field main_res); fps=$(field main_fps); kbps=$(field main_kbps); codec=$(field codec)
     sub=$(field sub); sres=$(field sub_res); sfps=$(field sub_fps); skbps=$(field sub_kbps)
-    audio=$(field audio); gain=$(field gain)
     case "$res" in 3840x2160|1920x1080|1280x720) ;; *) fail err-camera ;; esac
     case "$fps" in 30|25|20|15) ;; *) fail err-camera ;; esac
     case "$kbps" in 2000|4000|6000|8000) ;; *) fail err-camera ;; esac
@@ -324,21 +354,31 @@ post_camera() {
     case "$sres" in 1280x720|640x360) ;; *) fail err-camera ;; esac
     case "$sfps" in 5|10|15) ;; *) fail err-camera ;; esac
     case "$skbps" in 300|500|1000|2000) ;; *) fail err-camera ;; esac
-    case "$audio" in 0|1) ;; *) fail err-camera ;; esac
-    case "$gain" in 0|6|12|18|24|30|36|40) ;; *) fail err-camera ;; esac
     # Object detection works from the sub stream at 640x360; the page shows those as fixed while it's on.
     if [ "$DETECT" = 1 ]; then sub=1; sres=640x360; fi
     set_setting MAIN_WIDTH "${res%x*}"; set_setting MAIN_HEIGHT "${res#*x}"
     set_setting MAIN_FPS "$fps"; set_setting MAIN_BITRATE "$((kbps * 1000))"; set_setting MAIN_CODEC "$codec"
     set_setting SUB_ENABLED "$sub"; set_setting SUB_WIDTH "${sres%x*}"; set_setting SUB_HEIGHT "${sres#*x}"
     set_setting SUB_FPS "$sfps"; set_setting SUB_BITRATE "$((skbps * 1000))"
-    set_setting AUDIO_ENABLED "$audio"; set_setting AUDIO_GAIN_DB "$gain"
     restart_streams
     # A detector that stopped (for example, waiting for the sub stream) tries again with the streams.
     if [ "$DETECT" = 1 ] && ! systemctl -q is-active vaidk-detect.service; then
         later "systemctl reset-failed vaidk-detect.service; systemctl restart vaidk-detect.service"
     fi
-    redirect "$SELF?msg=camera"
+    back camera
+}
+
+# The microphone: on or off, and its gain, which mic.sh sets as the streams start.
+post_audio() {
+    audio=$(field audio); gain=$(field gain)
+    allowed "$audio" "$AUDIO_ENABLED" "0 1" || fail err-camera
+    allowed "$gain" "$AUDIO_GAIN_DB" "0 6 12 18 24 30 36 40" || fail err-camera
+    set_setting AUDIO_ENABLED "$audio"; set_setting AUDIO_GAIN_DB "$gain"
+    if [ "$audio" != "$AUDIO_ENABLED" ] || [ "$gain" != "$AUDIO_GAIN_DB" ]; then
+        restart_streams
+        back camera
+    fi
+    back saved
 }
 
 post_device() {
@@ -351,7 +391,7 @@ post_device() {
     set_setting NAME "$name"
     # The MQTT topic and Home Assistant's device are named after the camera.
     if [ "$name" != "$NAME" ]; then later "systemctl try-restart vaidk-mqtt.service"; fi
-    redirect "$SELF?msg=device"
+    back device
 }
 
 post_picture() { # applied while streaming
@@ -365,7 +405,7 @@ post_picture() { # applied while streaming
     set_setting ANTIFLICKER "$af"; set_setting EXPOSURE_EV "$ev"; set_setting WHITE_BALANCE "$wb"
     set_setting SATURATION "$sat"; set_setting SHARPNESS "$sharp"
     sh "$VAIDK_DIR/camera/camd.sh" reload
-    redirect "$SELF?msg=picture"
+    back picture
 }
 
 post_overlay() {
@@ -379,7 +419,7 @@ post_overlay() {
     set_setting OVERLAY "$overlay"; set_setting OVERLAY_POSITION "$pos"; set_setting OVERLAY_STREAMS "$streams"
     set_setting TIME_ZONE "$tz"
     later "sh $VAIDK_DIR/camera/camd.sh tz; systemctl restart vaidk-camera.service"
-    redirect "$SELF?msg=camera"
+    back camera
 }
 
 post_talk() {
@@ -391,10 +431,10 @@ post_talk() {
     if [ "$talkback" != "$TALKBACK" ]; then # the RTSP server offers the backchannel only after a restart
         set_setting TALKBACK "$talkback"
         restart_streams
-        redirect "$SELF?msg=camera"
+        back camera
     fi
     sh "$VAIDK_DIR/camera/camd.sh" reload
-    redirect "$SELF?msg=talk"
+    back talk
 }
 
 # The ONVIF service (onvif/onvifd.py) keeps the view and presets; this page asks it over its local
@@ -408,7 +448,7 @@ post_onvif() {
     allowed "$onvif" "$ONVIF" "0 1" || fail err-camera
     set_setting ONVIF "$onvif"
     later "systemctl restart vaidk-onvif.service"
-    redirect "$SELF?msg=onvif"
+    back onvif
 }
 
 post_ptz() {
@@ -427,7 +467,7 @@ post_ptz() {
             fi ;;
         *) fail err-ptz ;;
     esac
-    redirect "$SELF?msg=ptz-$action"
+    back "ptz-$action"
 }
 
 # Object detection (detect/detect.sh runs vaidk-detect). Turning it on or off restarts the streams;
@@ -458,7 +498,7 @@ post_detect() {
     # service follows detection, and publishes the chosen objects.
     if [ $msg != detect ]; then
         later "systemctl reset-failed vaidk-detect.service; systemctl restart vaidk-detect.service vaidk-camera.service vaidk-mqtt.service"
-        redirect "$SELF?msg=$msg"
+        back "$msg"
     fi
     # The detector restarts for new objects or confidence, and when it isn't running (saving tries again).
     if [ "$detect" = 1 ] && { [ "$objects" != "$DETECT_OBJECTS" ] || [ "$conf" != "$DETECT_CONFIDENCE" ] ||
@@ -467,7 +507,7 @@ post_detect() {
     fi
     if [ "$objects" != "$DETECT_OBJECTS" ]; then later "systemctl try-restart vaidk-mqtt.service"; fi
     sh "$VAIDK_DIR/camera/camd.sh" reload
-    redirect "$SELF?msg=detect"
+    back detect
 }
 
 # MQTT (mqtt/mqttd.py): saving restarts the service, which connects again. The password is kept apart
@@ -494,8 +534,8 @@ post_mqtt() {
     elif [ -n "$pass" ]; then (umask 077 && printf '%s' "$pass" > "$DATA_DIR/mqtt-password"); fi
     later "systemctl restart vaidk-mqtt.service"
     # It runs only while detection is on; otherwise the status line says what it waits for.
-    if [ "$mqtt" = 1 ] && [ "$DETECT" = 1 ]; then redirect "$SELF?msg=mqtt"; fi
-    redirect "$SELF?msg=mqtt-saved"
+    if [ "$mqtt" = 1 ] && [ "$DETECT" = 1 ]; then back mqtt; fi
+    back mqtt-saved
 }
 
 # HDMI output: live view is a stream of the camera's own, so turning it on or off restarts the streams;
@@ -506,62 +546,68 @@ post_hdmi() {
     set_setting HDMI "$hdmi"
     if [ "$hdmi" != "$HDMI" ]; then
         restart_streams
-        redirect "$SELF?msg=camera"
+        back camera
     fi
-    redirect "$SELF?msg=hdmi"
+    back hdmi
 }
 
 handle_post() {
     read_form
+    # Where the form came from, to go back to; both end up in the Location header.
+    BACK_P=$(field p); BACK_S=$(field s)
+    case "$BACK_P" in overview|video|audio|ptz|detect|frigate|system) ;; *) BACK_P="" ;; esac
+    matches "$BACK_S" '[a-z][a-z-]{0,15}' || BACK_S=""
     [ "$(field t)" = "$(token)" ] || fail err-token
     case "$(field action)" in
         setup) [ "$MODE" = ap ] && post_setup ;;
         wifi) post_wifi ;;
         camera) post_camera ;;
+        audio) post_audio ;;
         picture) post_picture ;;
         overlay) post_overlay ;;
         talk) post_talk ;;
-        chime) sh "$VAIDK_DIR/camera/camd.sh" chime; redirect "$SELF?msg=chime" ;;
+        chime) sh "$VAIDK_DIR/camera/camd.sh" chime; back chime ;;
         onvif) post_onvif ;;
         ptz) post_ptz ;;
         detect) post_detect ;;
         mqtt) post_mqtt ;;
         hdmi) post_hdmi ;;
         device) post_device ;;
-        restart-streams) restart_streams; redirect "$SELF?msg=restart" ;;
+        restart-streams) restart_streams; back restart ;;
         reboot)
             later "sleep 3; reboot"
-            page_start "Restarting"
+            notice_start "Restarting"
             printf '<h1>Restarting</h1><p>The camera restarts now and is back in about 2 minutes.</p>'
             if [ "$MODE" = ap ] && [ -n "$(wlan_ip)" ]; then
                 printf '<p>Switch back to your usual Wi-Fi and open <a href="http://%s/">http://%s/</a>.</p>' "$(wlan_ip)" "$(wlan_ip)"
             fi
-            page_end; exit 0 ;;
+            notice_end; exit 0 ;;
         reset)
             [ "$(field confirm)" = yes ] || fail err-reset
             later "sh $VAIDK_DIR/web/ui.sh reset"
-            page_start "Camera reset"
+            notice_start "Camera reset"
             printf '<h1>Camera reset</h1><p>The camera forgets its Wi-Fi network, settings and admin account, then restarts in setup mode (about 2 minutes).</p>'
             printf '<p>To set it up again, join its Wi-Fi network <b>%s</b> (password on the sticker under the camera) and open <a href="%s">%s</a>.</p>' "$(h "$(ap_ssid)")" "$AP_URL" "$AP_URL"
-            page_end; exit 0 ;;
+            notice_end; exit 0 ;;
     esac
-    redirect "$SELF"
+    back
 }
 
 # ----- pages -----
 
+signal_word() { if [ "$1" -ge -60 ] 2>/dev/null; then echo strong; elif [ "$1" -ge -72 ] 2>/dev/null; then echo good; else echo weak; fi; }
+
 network_fields() { # network_fields MODE(auto|cached|fresh)
     list=$(networks "$1")
-    printf '<label>Network <select name="ssid"><option value="">Choose a network</option>'
+    printf '<div class="fields"><label>Network <select name="ssid"><option value="">Choose a network</option>'
     printf '%s\n' "$list" | while IFS='	' read -r signal ssid; do
         [ -n "$ssid" ] || continue
-        if [ "$signal" -ge -60 ] 2>/dev/null; then bars="strong"; elif [ "$signal" -ge -72 ] 2>/dev/null; then bars="good"; else bars="weak"; fi
-        printf '<option value="%s">%s (%s)</option>' "$(h "$ssid")" "$(h "$ssid")" "$bars"
+        printf '<option value="%s">%s (%s)</option>' "$(h "$ssid")" "$(h "$ssid")" "$(signal_word "$signal")"
     done
     printf '</select></label>'
-    if [ "$MODE" = lan ]; then printf '<p class="hint"><a href="%s?scan=1#wifi">Scan for networks</a></p>' "$SELF"; fi
     printf '<label>Or type its name <input name="other_ssid" maxlength="32" autocomplete="off"></label>'
-    printf '<label>Wi-Fi password <input name="wifi_pass" type="password" maxlength="63" autocomplete="off"></label>'
+    printf '<label>Wi-Fi password <input name="wifi_pass" type="password" maxlength="63" autocomplete="off"></label></div>'
+    if [ "$MODE" = lan ]; then printf '<p class="hint"><a href="%s?p=system&amp;scan=1#wifi">Scan again for networks</a></p>' "$SELF"; fi
 }
 
 account_fields() {
@@ -573,48 +619,163 @@ account_fields() {
 
 setup_page() {
     page_start "Set up your camera"
-    printf '<header><h1>Set up your camera</h1><p>Vision AI DevKit RTSP camera</p></header>'
+    printf '<header class="top narrow"><div class="bar"><div class="brand"><span class="name">Set up your camera</span></div><div class="who">Vision AI DevKit RTSP camera</div></div></header><main class="narrow">'
     show_message
     form_start setup
-    printf '<section><h2>1. Your Wi-Fi</h2>'
+    printf '<section class="card"><div class="card-head"><h2>1. Your Wi-Fi</h2></div>'
     network_fields auto
-    printf '</section><section><h2>2. Admin account</h2><p class="hint">Signs in to this page from your network, and over SSH.</p>'
+    printf '</section><section class="card"><div class="card-head"><h2>2. Admin account</h2></div>'
+    hint "Signs in to this page from your network, and over SSH."
+    printf '<div class="fields">'
     account_fields
-    printf '</section><section><h2>3. Camera</h2>'
+    printf '</div></section><section class="card"><div class="card-head"><h2>3. Camera</h2></div>'
     printf '<label>Camera name <input name="name" value="%s" maxlength="32" required></label>' "$(h "$NAME")"
-    printf '<label>Streams <select name="profile">'
-    option hd "1080p main + 640x360 sub (recommended)" hd
-    option 4k "4K main + 720p sub" ""
-    printf '</select></label><p class="hint">You can fine-tune resolution, frame rate and bitrate later.</p>'
+    printf '<label>Streams (main + sub) <select name="profile">'
+    option hd "1080p + 640x360 (recommended)" hd
+    option 4k "4K + 720p" ""
+    printf '</select></label>'
+    hint "You can fine-tune resolution, frame rate and bitrate later."
     printf '<label class="check"><input type="checkbox" name="audio" value="1"%s> Include microphone audio on the main stream</label>' "$([ "$AUDIO_ENABLED" = 1 ] && echo ' checked')"
-    printf '<p class="hint">Recording sound can be regulated where you live; let people know the camera records audio.</p></section>'
-    printf '<button>Save and connect</button></form>'
+    hint "Recording sound can be regulated where you live; let people know the camera records audio."
+    printf '</section><div class="actions"><button>Save and connect</button></div></form>'
     page_end
 }
 
-status_section() {
-    ip=""
-    if wifi_connected; then ip=$(wlan_ip); fi
-    printf '<section><h2>Status</h2><dl>'
-    if [ -n "$ip" ]; then
-        sig=$(wifi_signal)
-        item "Wi-Fi" "$(wifi_ssid)${sig:+ ($sig dBm)}"
-        item "Address" "$ip"
+# ----- Overview -----
+
+rate_text() { if [ $(( $1 % 1000000 )) = 0 ]; then echo "$(( $1 / 1000000 )) Mbps"; else echo "$(( $1 / 1000 )) kbps"; fi; }
+main_summary() {
+    if [ "$MAIN_CODEC" = 0 ]; then codec=H.265; else codec=H.264; fi
+    printf '%sx%s, %s fps, %s, %s' "$MAIN_WIDTH" "$MAIN_HEIGHT" "$MAIN_FPS" "$codec" "$(rate_text "$MAIN_BITRATE")"
+    if [ "$AUDIO_ENABLED" = 1 ]; then printf ', with sound'; fi
+}
+sub_summary() { printf '%sx%s, %s fps, H.264, %s' "$SUB_WIDTH" "$SUB_HEIGHT" "$SUB_FPS" "$(rate_text "$SUB_BITRATE")"; }
+
+# Badges: "CLASS TEXT" for section_start and feature (on, off or warn)
+detect_badge() {
+    if [ "$DETECT" != 1 ]; then echo "off Off"
+    elif ! systemctl -q is-active vaidk-detect.service; then echo "warn Stopped"
+    elif [ "$(detect_value status)" = running ]; then echo "on On"
+    else echo "warn Starting"; fi
+}
+mqtt_badge() {
+    if [ "$MQTT" != 1 ]; then echo "off Off"
+    elif [ -z "$MQTT_HOST" ] || [ "$DETECT" != 1 ]; then echo "warn Waiting"
+    elif ! systemctl -q is-active vaidk-mqtt.service; then echo "warn Stopped"
     else
-        s=$(saved_ssid)
-        item "Wi-Fi" "Not connected${s:+ (saved network: $s)}"
+        case "$(mqtt_value status)" in connected) echo "on Connected" ;; error) echo "warn Error" ;; *) echo "warn Connecting" ;; esac
     fi
-    if [ -e "$RUN_DIR/streaming" ]; then item "Streams" "Streaming"; else item "Streams" "Starting or recovering"; fi
-    item_code "Main stream" "rtsp://${ip:-camera-ip}:8900/live"
-    if [ "$SUB_ENABLED" = 1 ]; then item_code "Sub stream" "rtsp://${ip:-camera-ip}:8901/live"; fi
-    if [ "$AUDIO_ENABLED" = 1 ]; then item "Microphone" "On, +${AUDIO_GAIN_DB} dB gain (main stream)"; else item "Microphone" "Off"; fi
-    if [ "$TALKBACK" = 1 ]; then item "Talk-back" "On, speaker volume ${SPEAKER_VOLUME}%"; else item "Talk-back" "Off"; fi
-    if [ "$ONVIF" = 1 ]; then item "Pan, tilt and zoom" "On, ONVIF port $ONVIF_PORT"; else item "Pan, tilt and zoom" "Off"; fi
-    if [ "$DETECT" = 1 ] && [ "$(detect_value status)" = running ]; then item "Object detection" "On, in view: $(in_view)"
-    else item "Object detection" "$(detect_status)"; fi
-    item "MQTT" "$(mqtt_status)"
-    item "HDMI output" "$(hdmi_status)"
-    printf '</dl></section>'
+}
+hdmi_badge() {
+    if [ "$HDMI" != 1 ]; then echo "off Off"
+    elif pidof weston >/dev/null; then echo "on Live view"
+    else echo "warn Starting"; fi
+}
+overlay_badge() {
+    case "$OVERLAY" in
+        time) echo "on Date and time" ;; name) echo "on Camera name" ;; time-name) echo "on Date, time and name" ;;
+        *) echo "off Off" ;;
+    esac
+}
+
+feature() { # feature TAB CARD LABEL BADGE_CLASS BADGE_TEXT...: a line of the Features tile
+    _ft=$1; _fc=$2; _fl=$3; _fb=$4; shift 4
+    printf '<li><a href="%s?p=%s#%s">%s</a><span class="badge %s">%s</span></li>' "$SELF" "$_ft" "$_fc" "$_fl" "$_fb" "$(h "$*")"
+}
+tile_link() { printf '<div class="actions"><a class="button secondary" href="%s?p=%s">%s</a>' "$SELF" "$1" "$2"; } # TAB LABEL
+
+ov_streams() {
+    if [ -e "$RUN_DIR/streaming" ]; then section_start ov-streams "Streams" on Streaming
+    else section_start ov-streams "Streams" warn "Starting or recovering"; fi
+    printf '<dl><dt>Main</dt><dd><code class="url">rtsp://%s:8900/live</code><br><span class="muted">%s</span></dd>' "${ip:-camera-ip}" "$(h "$(main_summary)")"
+    if [ "$SUB_ENABLED" = 1 ]; then
+        printf '<dt>Sub</dt><dd><code class="url">rtsp://%s:8901/live</code><br><span class="muted">%s</span></dd>' "${ip:-camera-ip}" "$(h "$(sub_summary)")"
+    else
+        item "Sub" "Off"
+    fi
+    item "Players" "$(viewers_text)"
+    printf '</dl>'
+    tile_link video "Stream settings"
+    form_start restart-streams; printf '<button class="secondary">Restart streams</button></form></div>'
+    section_end
+}
+
+ov_detect() {
+    section_start ov-detect "Object detection" $(detect_badge)
+    if [ "$DETECT" = 1 ]; then
+        printf '<dl>'
+        if [ "$(detect_value status)" = running ]; then item "In view" "$(in_view)"; fi
+        item "Status" "$(detect_status)"
+        printf '</dl>'
+    else
+        hint "The camera's own detector can find people, vehicles and animals, draw boxes around them on the main stream, and tell your MQTT broker."
+    fi
+    tile_link detect "Detection settings"; printf '</div>'
+    section_end
+}
+
+ov_health() {
+    power_read
+    section_start ov-health "Health"
+    printf '<dl>'
+    cpu=$(cpu_busy 0.5)
+    if [ -n "$cpu" ]; then item "Processor" "$cpu% busy"; fi
+    temps=$(temperatures)
+    if [ -n "$temps" ]; then printf '<dt>Temperatures</dt><dd>%s</dd>' "$temps"; fi
+    m=$(mem_text)
+    if [ -n "$m" ]; then item "Memory" "$m"; fi
+    set -- $(storage_kb)
+    if [ "${1:-0}" -gt 0 ]; then item "Storage" "$(fmt_kb "$2") of $(fmt_kb "$1") used ($(( $2 * 100 / $1 ))%)"; fi
+    b=$(battery_text)
+    if [ -n "$b" ]; then item "Battery" "$b"; fi
+    if [ "$pc" = 1 ]; then printf '<dt>Power</dt><dd class="warn-text">%s</dd>' "$(h "$(power_text)")"
+    else item "Power" "$(power_text)"; fi
+    if [ -s "$RUN_DIR/crashes" ]; then item "Crashes" "$(crash_text)"; fi
+    item "Running for" "$(uptime_text)"
+    printf '</dl>'
+    tile_link system "System details"; printf '</div>'
+    section_end
+}
+
+ov_wifi() {
+    if [ -n "$ip" ]; then
+        section_start ov-wifi "Wi-Fi" on Connected
+        sig=$(wifi_signal)
+        printf '<dl>'
+        item "Network" "$(wifi_ssid)"
+        if [ -n "$sig" ]; then item "Signal" "$sig dBm, $(signal_word "$sig")"; fi
+        item "Address" "$ip"
+        link=$(wifi_link)
+        if [ -n "$link" ]; then item "Link" "$link"; fi
+        printf '</dl>'
+    else
+        section_start ov-wifi "Wi-Fi" warn "Not connected"
+        s=$(saved_ssid)
+        hint "$(h "Not connected${s:+. Saved network: $s}")"
+    fi
+    printf '<div class="actions"><a class="button secondary" href="%s?p=system#wifi">Wi-Fi settings</a></div>' "$SELF"
+    section_end
+}
+
+ov_features() {
+    section_start ov-features "Features"
+    printf '<ul class="states">'
+    if [ "$AUDIO_ENABLED" = 1 ]; then feature audio mic "Microphone" on "On, +$AUDIO_GAIN_DB dB"
+    else feature audio mic "Microphone" off Off; fi
+    if [ "$TALKBACK" = 1 ]; then feature audio talk "Talk-back" on "On, volume $SPEAKER_VOLUME%"
+    else feature audio talk "Talk-back" off Off; fi
+    feature ptz ptz "Pan, tilt and zoom" $(onoff "$ONVIF")
+    feature video overlay "On-screen text" $(overlay_badge)
+    feature detect mqtt "MQTT" $(mqtt_badge)
+    feature video hdmi "HDMI output" $(hdmi_badge)
+    printf '</ul>'
+    section_end
+}
+
+overview_page() {
+    printf '<div class="tiles">'
+    ov_streams; ov_detect; ov_health; ov_wifi; ov_features
+    printf '</div>'
 }
 
 # ----- System section -----
@@ -729,6 +890,74 @@ viewers() { # "PORT ADDRESS CONNECTIONS" for each client of the RTSP streams (po
         END { for (k in n) print k, n[k] }' /proc/net/tcp /proc/net/tcp6 2>/dev/null | sort
 }
 
+viewers_text() { # "main: 192.168.1.20; sub: none"
+    main=; sub=
+    while read -r port addr count; do
+        [ -n "$port" ] || continue
+        if [ "$count" -gt 1 ]; then addr="$addr ($count connections)"; fi
+        case "$port" in 22C4) main="$main${main:+, }$addr" ;; 22C5) sub="$sub${sub:+, }$addr" ;; esac
+    done <<EOF
+$(viewers)
+EOF
+    v="main: ${main:-none}"
+    if [ "$SUB_ENABLED" = 1 ] || [ -n "$sub" ]; then v="$v; sub: ${sub:-none}"; fi
+    printf '%s' "$v"
+}
+cpu_busy() { # cpu_busy SECONDS: how busy the processor was over that time, in % (as system_load counts it)
+    read -r _ a1 b1 c1 d1 e1 f1 g1 h1 _ < /proc/stat
+    sleep "$1"
+    read -r _ a2 b2 c2 d2 e2 f2 g2 h2 _ < /proc/stat
+    busy=$(( a2 + b2 + c2 + f2 + g2 + h2 - a1 - b1 - c1 - f1 - g1 - h1 ))
+    all=$(( busy + d2 + e2 - d1 - e1 ))
+    if [ "$all" -gt 0 ]; then echo $(( (100 * busy + all / 2) / all )); fi
+}
+mem_text() { # "614 MB of 1.8 GB in use (33%)"
+    set -- $(awk '/^MemTotal:/ { t = $2 } /^MemAvailable:/ { a = $2 } END { print t - a, t + 0 }' /proc/meminfo)
+    if [ "${2:-0}" -gt 0 ]; then printf '%s of %s in use (%s%%)' "$(fmt_kb "$1")" "$(fmt_kb "$2")" "$(( $1 * 100 / $2 ))"; fi
+}
+storage_kb() { # "DATA_TOTAL DATA_USED ROOT_TOTAL ROOT_USED RAM_USED", in KB
+    df -Pk /data / /run /var/volatile 2>/dev/null |
+        awk 'NR > 1 { t[$6] = $2; u[$6] = $3 } END { print t["/data"] + 0, u["/data"] + 0, t["/"] + 0, u["/"] + 0, u["/run"] + u["/var/volatile"] }'
+}
+power_read() { # the battery and the power sources, into pcap st uv usb uvolts pc pcmax dc
+    P=/sys/class/power_supply
+    pcap=; st=; uv=; usb=; uvolts=; pc=; pcmax=; dc=
+    read -r pcap 2>/dev/null < $P/battery/capacity
+    read -r st 2>/dev/null < $P/battery/status
+    read -r uv 2>/dev/null < $P/battery/voltage_now
+    read -r usb 2>/dev/null < $P/usb/online
+    read -r uvolts 2>/dev/null < $P/usb/voltage_now
+    read -r pc 2>/dev/null < $P/pc_port/online
+    read -r pcmax 2>/dev/null < $P/pc_port/current_max
+    read -r dc 2>/dev/null < $P/dc/online
+}
+battery_text() { # after power_read: "100%, full, 4.17 V"
+    [ -n "$pcap" ] || return 0
+    case "$st" in Charging) bst=charging ;; Discharging) bst="on battery" ;; Full) bst=full ;; "Not charging") bst="not charging" ;; *) bst=$st ;; esac
+    printf '%s%%, %s%s' "$pcap" "$bst" "${uv:+, $(volts "$uv") V}"
+}
+power_text() { # after power_read: where the power comes from
+    if [ "$pc" = 1 ]; then printf "a computer's USB port%s: the battery can run down while streaming" "${pcmax:+ (up to $((pcmax / 1000)) mA)}"
+    elif [ "$usb" = 1 ]; then printf 'USB charger%s' "${uvolts:+, $(volts "$uvolts") V}"
+    elif [ "$dc" = 1 ]; then printf 'DC input'
+    else printf 'none, running on the battery'; fi
+}
+crash_text() { # "3 (latest: weston, signal 5, 1 h ago)", or "none"
+    if [ -s "$RUN_DIR/crashes" ]; then
+        set -- $(tail -n 1 "$RUN_DIR/crashes")
+        ago=$(( $(date +%s) - $1 ))
+        if [ "$ago" -ge 0 ]; then ago=", $(age "$ago") ago"; else ago=""; fi
+        printf '%s (latest: %s, signal %s%s)' "$(wc -l < "$RUN_DIR/crashes")" "$2" "$3" "$ago"
+    else
+        printf 'none'
+    fi
+}
+wifi_link() { # "5 GHz, channel 149, 433.3 Mbit/s"
+    iw dev wlan0 link 2>/dev/null | awk '/freq:/ { f = $2 } /tx bitrate:/ { r = $3 }
+        END { if (f) { b = "2.4"; c = (f == 2484) ? 14 : (f - 2407) / 5; if (f > 4000) { b = "5"; c = (f - 5000) / 5 }
+                       printf "%s GHz, channel %d, %s Mbit/s", b, c, r } }'
+}
+
 system_section() {
     load=$(system_load)
     cpu=; cores=; tx_rate=; rx_rate=; progs=
@@ -742,20 +971,20 @@ system_section() {
     done <<EOF
 $load
 EOF
-    printf '<section id="system"><h2>System</h2><dl>'
+    section_start system "System"
+    printf '<dl>'
     if [ -n "$cpu" ]; then
         per=""
         for v in $cores; do per="$per${per:+, }$v%"; done
         item "Processor" "$cpu% busy${per:+ (cores: $per)}$(cpu_limit)"
     fi
     if [ -n "$progs" ]; then item "Busiest programs" "$progs (of one core)"; fi
-    set -- $(awk '/^MemTotal:/ { t = $2 } /^MemAvailable:/ { a = $2 } END { print t - a, t + 0 }' /proc/meminfo)
-    if [ "${2:-0}" -gt 0 ]; then item "Memory" "$(fmt_kb "$1") of $(fmt_kb "$2") in use ($(( $1 * 100 / $2 ))%)"; fi
+    m=$(mem_text)
+    if [ -n "$m" ]; then item "Memory" "$m"; fi
     temps=$(temperatures)
     if [ -n "$temps" ]; then printf '<dt>Temperatures</dt><dd>%s</dd>' "$temps"; fi
 
-    set -- $(df -Pk /data / /run /var/volatile 2>/dev/null |
-        awk 'NR > 1 { t[$6] = $2; u[$6] = $3 } END { print t["/data"] + 0, u["/data"] + 0, t["/"] + 0, u["/"] + 0, u["/run"] + u["/var/volatile"] }')
+    set -- $(storage_kb)
     if [ "${1:-0}" -gt 0 ]; then item "Data storage" "$(fmt_kb "$2") of $(fmt_kb "$1") used ($(( $2 * 100 / $1 ))%)"; fi
     if [ "${3:-0}" -gt 0 ]; then item "System storage" "$(fmt_kb "$4") of $(fmt_kb "$3") used (read-only)"; fi
     cap=$(sed -n 's/^[[:space:]]*RuntimeMaxUse=//p' /etc/systemd/journald.conf 2>/dev/null | tail -n 1)
@@ -779,64 +1008,31 @@ EOF
     esac
     if [ -n "$wear" ]; then printf '<dt>Flash wear</dt><dd>%s</dd>' "$wear"; fi
 
-    P=/sys/class/power_supply
-    pcap=; st=; uv=; usb=; uvolts=; pc=; pcmax=; dc=
-    read -r pcap 2>/dev/null < $P/battery/capacity
-    read -r st 2>/dev/null < $P/battery/status
-    read -r uv 2>/dev/null < $P/battery/voltage_now
-    read -r usb 2>/dev/null < $P/usb/online
-    read -r uvolts 2>/dev/null < $P/usb/voltage_now
-    read -r pc 2>/dev/null < $P/pc_port/online
-    read -r pcmax 2>/dev/null < $P/pc_port/current_max
-    read -r dc 2>/dev/null < $P/dc/online
-    if [ -n "$pcap" ]; then
-        case "$st" in Charging) st=charging ;; Discharging) st="on battery" ;; Full) st=full ;; "Not charging") st="not charging" ;; esac
-        item "Battery" "$pcap%, $st${uv:+, $(volts "$uv") V}"
-    fi
-    if [ "$pc" = 1 ]; then power="a computer's USB port${pcmax:+ (up to $((pcmax / 1000)) mA)}: the battery can run down while streaming"
-    elif [ "$usb" = 1 ]; then power="USB charger${uvolts:+, $(volts "$uvolts") V}"
-    elif [ "$dc" = 1 ]; then power="DC input"
-    else power="none, running on the battery"; fi
-    item "Power" "$power"
+    power_read
+    b=$(battery_text)
+    if [ -n "$b" ]; then item "Battery" "$b"; fi
+    item "Power" "$(power_text)"
 
-    link=$(iw dev wlan0 link 2>/dev/null | awk '/freq:/ { f = $2 } /tx bitrate:/ { r = $3 }
-        END { if (f) { b = "2.4"; c = (f == 2484) ? 14 : (f - 2407) / 5; if (f > 4000) { b = "5"; c = (f - 5000) / 5 }
-                       printf "%s GHz, channel %d, %s Mbit/s", b, c, r } }')
+    link=$(wifi_link)
     if [ -n "$link" ]; then item "Wi-Fi link" "$link"; fi
     txb=0; rxb=0
     read -r txb 2>/dev/null < /sys/class/net/wlan0/statistics/tx_bytes
     read -r rxb 2>/dev/null < /sys/class/net/wlan0/statistics/rx_bytes
     item "Wi-Fi traffic" "sending ${tx_rate:-0} Mbit/s, receiving ${rx_rate:-0} Mbit/s; since start $(fmt_kb $((txb / 1024))) sent, $(fmt_kb $((rxb / 1024))) received"
-    main=; sub=
-    while read -r port addr count; do
-        [ -n "$port" ] || continue
-        if [ "$count" -gt 1 ]; then addr="$addr ($count connections)"; fi
-        case "$port" in 22C4) main="$main${main:+, }$addr" ;; 22C5) sub="$sub${sub:+, }$addr" ;; esac
-    done <<EOF
-$(viewers)
-EOF
-    v="main: ${main:-none}"
-    if [ "$SUB_ENABLED" = 1 ] || [ -n "$sub" ]; then v="$v; sub: ${sub:-none}"; fi
-    item "Stream viewers" "$v"
-
-    if [ -s "$RUN_DIR/crashes" ]; then
-        set -- $(tail -n 1 "$RUN_DIR/crashes")
-        ago=$(( $(date +%s) - $1 ))
-        if [ "$ago" -ge 0 ]; then ago=", $(age "$ago") ago"; else ago=""; fi
-        item "Crashes since start" "$(wc -l < "$RUN_DIR/crashes") (latest: $2, signal $3$ago)"
-    else
-        item "Crashes since start" "none"
-    fi
+    item "Stream viewers" "$(viewers_text)"
+    item "Crashes since start" "$(crash_text)"
     item "Running for" "$(uptime_text)"
     fw=; read -r fw 2>/dev/null < /etc/version
     if [ -n "$fw" ]; then item "Firmware" "$fw"; fi
-    printf '</dl><p class="hint">Measured over one second as the page loaded. <a href="%s#system">Refresh</a></p></section>' "$SELF"
+    printf '</dl>'
+    hint "Measured over one second as the page loaded. <a href=\"$SELF?p=system\">Measure again</a>"
+    section_end
 }
 
 streams_section() {
-    printf '<section id="streams"><h2>Camera streams</h2>'
+    section_start streams "Streams"
     form_start camera
-    printf '<fieldset><legend>Main stream (port 8900)</legend><label>Resolution <select name="main_res">'
+    printf '<fieldset><legend>Main stream <span class="muted">port 8900</span></legend><div class="fields"><label>Resolution <select name="main_res">'
     cur="${MAIN_WIDTH}x$MAIN_HEIGHT"
     option 3840x2160 "4K (3840x2160)" "$cur"; option 1920x1080 "1080p (1920x1080)" "$cur"; option 1280x720 "720p (1280x720)" "$cur"
     printf '</select></label><label>Frame rate <select name="main_fps">'
@@ -844,14 +1040,14 @@ streams_section() {
     printf '</select></label><label>Bitrate <select name="main_kbps">'
     for b in 2000 4000 6000 8000; do option $b "$((b / 1000)) Mbps" "$((MAIN_BITRATE / 1000))"; done
     printf '</select></label><label>Codec <select name="codec">'
-    option 1 "H.264 (most compatible)" "$MAIN_CODEC"; option 0 "H.265 (smaller files)" "$MAIN_CODEC"
-    printf '</select></label></fieldset><fieldset><legend>Sub stream (port 8901)</legend>'
+    option 1 "H.264 (any player)" "$MAIN_CODEC"; option 0 "H.265 (smaller)" "$MAIN_CODEC"
+    printf '</select></label></div></fieldset><fieldset><legend>Sub stream <span class="muted">port 8901</span></legend>'
     if [ "$DETECT" = 1 ]; then
         # post_camera keeps these too.
-        printf '<p class="hint">On, 640x360: object detection works from the sub stream. Turn detection off to change these.</p>'
-        printf '<input type="hidden" name="sub" value="1"><input type="hidden" name="sub_res" value="640x360">'
+        hint "On, at 640x360: object detection works from the sub stream. Turn detection off to change these."
+        printf '<input type="hidden" name="sub" value="1"><input type="hidden" name="sub_res" value="640x360"><div class="fields">'
     else
-        printf '<label>Sub stream <select name="sub">'
+        printf '<div class="fields"><label>On or off <select name="sub">'
         option 1 On "$SUB_ENABLED"; option 0 Off "$SUB_ENABLED"
         printf '</select></label><label>Resolution <select name="sub_res">'
         cur="${SUB_WIDTH}x$SUB_HEIGHT"
@@ -862,19 +1058,18 @@ streams_section() {
     for f in 5 10 15; do option $f "$f fps" "$SUB_FPS"; done
     printf '</select></label><label>Bitrate <select name="sub_kbps">'
     for b in 300 500 1000 2000; do option $b "$b kbps" "$((SUB_BITRATE / 1000))"; done
-    printf '</select></label></fieldset><fieldset><legend>Microphone (main stream)</legend><label>Audio <select name="audio">'
-    option 1 On "$AUDIO_ENABLED"; option 0 Off "$AUDIO_ENABLED"
-    printf '</select></label><label>Gain <select name="gain">'
-    for g in 0 6 12 18 24 30 36 40; do option $g "+$g dB" "$AUDIO_GAIN_DB"; done
-    printf '</select></label></fieldset><p class="hint">The sub stream is always H.264 (best for Frigate detection). Tested: 1080p at 15 or 30 fps up to 8 Mbps, 4K at 8 Mbps, sub stream 640x360 or 720p at 5 or 10 fps. Audio is AAC, 48 kHz mono; raise the gain if Frigate'"'"'s audio level stays low. Recording sound can be regulated where you live.</p>'
-    printf '<button>Save and restart streams</button></form></section>'
+    printf '</select></label></div></fieldset>'
+    more "About the streams" "The sub stream is always H.264, the best for Frigate's detection. H.264 plays everywhere; H.265 makes smaller files, but not every player or browser shows it. Tested: 1080p at 15 or 30 fps up to 8 Mbps, 4K at 8 Mbps, and a sub stream of 640x360 or 720p at 5 or 10 fps. The microphone is on the Audio tab."
+    save_row "Save and restart streams"
+    printf '</form>'
+    section_end
 }
 
 picture_section() {
-    printf '<section id="picture"><h2>Picture</h2>'
+    section_start picture "Picture"
     form_start picture
-    printf '<label>Light flicker <select name="antiflicker">'
-    options "$ANTIFLICKER" auto "Automatic" 60 "60 Hz mains (most of the Americas)" 50 "50 Hz mains (most other places)" off "Off"
+    printf '<div class="fields"><label>Light flicker <select name="antiflicker">'
+    options "$ANTIFLICKER" auto "Automatic" 60 "60 Hz (the Americas)" 50 "50 Hz (elsewhere)" off "Off"
     printf '</select></label><label>Exposure <select name="exposure">'
     options "$EXPOSURE_EV" -2 "-2 (darker)" -1.5 "-1.5" -1 "-1" -0.5 "-0.5" 0 "0 (automatic)" 0.5 "+0.5" 1 "+1" 1.5 "+1.5" 2 "+2 (brighter)"
     printf '</select></label><label>White balance <select name="white_balance">'
@@ -884,8 +1079,11 @@ picture_section() {
     options "$SATURATION" 0 "0 (black and white)" 1 1 2 2 3 3 4 4 5 "5 (normal)" 6 6 7 7 8 8 9 9 10 "10 (vivid)"
     printf '</select></label><label>Sharpness <select name="sharpness">'
     options "$SHARPNESS" 0 "0 (soft)" 1 1 2 "2 (normal)" 3 3 4 4 5 5 6 "6 (sharpest)"
-    printf '</select></label><p class="hint">Changes show on the streams within a second; they don'"'"'t restart. Set the light flicker to your mains frequency if lights band or flicker.</p>'
-    printf '<button>Save</button></form></section>'
+    printf '</select></label></div>'
+    hint "If lights band or flicker, set the light flicker to your mains frequency: 60 Hz in most of the Americas, 50 Hz in most other places."
+    save_row "Save" "Applies within a second, without restarting the streams."
+    printf '</form>'
+    section_end
 }
 
 TIME_ZONES='UTC0|UTC
@@ -930,69 +1128,93 @@ EOF
 }
 
 overlay_section() {
-    printf '<section id="overlay"><h2>On-screen text</h2>'
+    if [ "$OVERLAY" = off ]; then section_start overlay "On-screen text" off Off
+    else section_start overlay "On-screen text" on On; fi
     form_start overlay
-    printf '<label>Show <select name="overlay">'
+    printf '<div class="fields"><label>Show <select name="overlay">'
     options "$OVERLAY" off "Nothing" time "Date and time" name "Camera name" time-name "Date, time and camera name"
     printf '</select></label><label>Date and time <select name="overlay_position">'
     options "$OVERLAY_POSITION" top-left "Top left" top-right "Top right" bottom-left "Bottom left" bottom-right "Bottom right"
     printf '</select></label><label>Streams <select name="overlay_streams">'
-    options "$OVERLAY_STREAMS" main "Main stream only (recommended)" both "Main and sub streams"
+    options "$OVERLAY_STREAMS" main "Main stream only" both "Main and sub streams"
     printf '</select></label><label>Time zone <select name="tz">'
     tz_options
-    printf '</select></label><label>Or another time zone (POSIX form) <input name="tz_custom" maxlength="64" placeholder="EST5EDT,M3.2.0,M11.1.0" autocapitalize="none" autocomplete="off"></label>'
-    printf '<p class="hint">The camera name goes on the other edge of the same side. Frigate detects on the sub stream, where a ticking clock can count as motion. The camera sets its clock from the internet, so the time is right once it has been online.</p>'
-    printf '<button>Save and restart streams</button></form></section>'
+    printf '</select></label></div>'
+    printf '<details class="more"><summary>Another time zone</summary><label>Time zone in POSIX form <input name="tz_custom" maxlength="64" placeholder="EST5EDT,M3.2.0,M11.1.0" autocapitalize="none" autocomplete="off"></label></details>'
+    hint "The camera name goes on the other edge of the same side."
+    more "About the clock" "The camera sets its clock from the internet, so the time is right once it has been online. Frigate detects on the sub stream, where a ticking clock can count as motion: keep the text on the main stream only unless you need it there."
+    save_row "Save and restart streams"
+    printf '</form>'
+    section_end
+}
+
+mic_section() {
+    section_start mic "Microphone" $(onoff "$AUDIO_ENABLED")
+    form_start audio
+    printf '<div class="fields"><label>Sound on the main stream <select name="audio">'
+    options "$AUDIO_ENABLED" 1 "On" 0 "Off"
+    printf '</select></label><label>Gain <select name="gain">'
+    options "$AUDIO_GAIN_DB" 0 "+0 dB" 6 "+6 dB" 12 "+12 dB" 18 "+18 dB" 24 "+24 dB" 30 "+30 dB" 36 "+36 dB" 40 "+40 dB"
+    printf '</select></label></div>'
+    hint "The camera's microphones, as AAC at 48 kHz, mono. Raise the gain if Frigate's audio level stays low. Recording sound can be regulated where you live."
+    save_row "Save" "Changes restart the streams."
+    printf '</form>'
+    section_end
 }
 
 talk_section() {
-    printf '<section id="talk"><h2>Talk-back</h2>'
+    section_start talk "Talk-back" $(onoff "$TALKBACK")
     form_start talk
-    printf '<label>Talk-back <select name="talkback">'
+    printf '<div class="fields"><label>On or off <select name="talkback">'
     options "$TALKBACK" 1 "On" 0 "Off"
     printf '</select></label><label>Speaker volume <select name="volume">'
     options "$SPEAKER_VOLUME" 100 "100%" 90 "90%" 80 "80%" 70 "70%" 60 "60%" 50 "50%" 40 "40%" 30 "30%" 20 "20%" 10 "10%"
-    printf '</select></label>'
-    printf '<label class="check"><input type="checkbox" name="mute_mic" value="1"%s> Mute the microphones while the speaker plays (so the other end doesn'"'"'t hear itself)</label>' \
+    printf '</select></label></div>'
+    printf '<label class="check"><input type="checkbox" name="mute_mic" value="1"%s> Mute the microphones while the speaker plays, so the other end doesn'"'"'t hear itself</label>' \
         "$([ "$TALKBACK_MUTE_MIC" = 1 ] && echo ' checked')"
-    printf '<p class="hint">The main stream offers a two-way audio channel (ONVIF backchannel, G.711) that Frigate'"'"'s go2rtc uses for its talk button. It has no password: anyone who can reach the camera can use the speaker. Volume and muting change right away; turning talk-back on or off restarts the streams.</p>'
-    printf '<button>Save</button></form>'
-    form_start chime
-    printf '<button class="secondary">Test speaker</button></form></section>'
+    hint "A two-way audio channel on the main stream, for Frigate's talk button. It has no password: anyone who can reach the camera can use the speaker."
+    more "About talk-back" "It is an ONVIF backchannel with G.711 audio, which Frigate's go2rtc uses. Talking from a browser needs WebRTC and a page on HTTPS (see the Frigate tab). Volume and muting change at once; turning talk-back on or off restarts the streams."
+    # Test speaker submits the chime form below, so the two buttons sit together.
+    printf '<div class="actions"><button>Save</button><button class="secondary" form="chime">Test speaker</button></div></form>'
+    form_start chime "" chime; printf '</form>'
+    section_end
 }
 
 ptz_section() {
-    printf '<section id="ptz"><h2>Pan, tilt and zoom</h2>'
+    section_start ptz "Pan, tilt and zoom" $(onoff "$ONVIF")
     form_start onvif
-    printf '<label>Pan, tilt and zoom <select name="onvif">'
+    printf '<div class="fields"><label>On or off <select name="onvif">'
     options "$ONVIF" 1 "On" 0 "Off"
-    printf '</select></label>'
-    printf '<p class="hint">Digital: the camera shows part of its 4K picture, up to 4x, on both streams. Frigate and Home Assistant move it over ONVIF (port %s). It has no password: anyone who can reach the camera can move the view. Off shows the whole picture.</p>' "$ONVIF_PORT"
-    printf '<button>Save</button></form>'
-    if [ "$ONVIF" = 1 ]; then
-        state=$(ptz_local)
-        zoom=$(printf '%s\n' "$state" | sed -n 's/^zoom=//p')
-        if [ -z "$zoom" ]; then
-            printf '<p class="hint">The service isn'"'"'t answering yet.</p></section>'
-            return
-        fi
-        if [ "$zoom" = 1.00 ]; then now="the whole picture"; else now="${zoom}x zoom"; fi
-        printf '<h3>View</h3><div class="row"><span class="preset">Now: %s</span>' "$now"
-        form_start ptz; printf '<input type="hidden" name="do" value="full"><button class="secondary">Show the whole picture</button></form></div>'
-        printf '<h3>Presets</h3>'
-        presets=$(printf '%s\n' "$state" | sed -n 's/^preset=//p')
-        if [ -z "$presets" ]; then printf '<p class="hint">No presets yet.</p>'; fi
-        printf '%s\n' "$presets" | while read -r t name; do
-            [ -n "$t" ] || continue
-            printf '<div class="row"><span class="preset">%s</span>' "$(h "$name")"
-            form_start ptz; printf '<input type="hidden" name="do" value="goto"><input type="hidden" name="token" value="%s"><button class="secondary">Go</button></form>' "$(h "$t")"
-            form_start ptz; printf '<input type="hidden" name="do" value="delete"><input type="hidden" name="token" value="%s"><button class="secondary">Delete</button></form></div>' "$(h "$t")"
-        done
-        form_start ptz
-        printf '<input type="hidden" name="do" value="save"><label>Save the current view as <input name="name" maxlength="32" placeholder="Front door" required></label><button>Save preset</button></form>'
-        printf '<p class="hint">Move the view from Frigate or Home Assistant, then save it here: Frigate goes to presets but can'"'"'t save them, and lists new ones after it restarts.</p>'
+    printf '</select></label></div>'
+    hint "Digital: the camera shows part of its 4K picture, up to 4x, on both streams. Frigate and Home Assistant move it over ONVIF (port $ONVIF_PORT). It has no password: anyone who can reach the camera can move the view."
+    save_row "Save" "Off shows the whole picture."
+    printf '</form>'
+    section_end
+    [ "$ONVIF" = 1 ] || return 0
+    section_start ptz-view "View and presets"
+    state=$(ptz_local)
+    zoom=$(printf '%s\n' "$state" | sed -n 's/^zoom=//p')
+    if [ -z "$zoom" ]; then
+        hint "The pan, tilt and zoom service isn't answering yet."
+        section_end
+        return 0
     fi
-    printf '</section>'
+    if [ "$zoom" = 1.00 ]; then now="the whole picture"; else now="${zoom}x zoom"; fi
+    printf '<div class="row"><span class="preset">Now: %s</span>' "$now"
+    form_start ptz; printf '<input type="hidden" name="do" value="full"><button class="secondary">Show the whole picture</button></form></div>'
+    printf '<h3>Presets</h3>'
+    presets=$(printf '%s\n' "$state" | sed -n 's/^preset=//p')
+    if [ -z "$presets" ]; then hint "No presets yet."; fi
+    printf '%s\n' "$presets" | while read -r t name; do
+        [ -n "$t" ] || continue
+        printf '<div class="row"><span class="preset">%s</span>' "$(h "$name")"
+        form_start ptz; printf '<input type="hidden" name="do" value="goto"><input type="hidden" name="token" value="%s"><button class="secondary">Go</button></form>' "$(h "$t")"
+        form_start ptz; printf '<input type="hidden" name="do" value="delete"><input type="hidden" name="token" value="%s"><button class="secondary">Delete</button></form></div>' "$(h "$t")"
+    done
+    form_start ptz save-preset
+    printf '<input type="hidden" name="do" value="save"><label>Save the current view as <input name="name" maxlength="32" placeholder="Front door" required></label><button>Save preset</button></form>'
+    hint "Move the view from Frigate or Home Assistant, then save it here: Frigate goes to presets but can't save them, and lists new ones after it restarts."
+    section_end
 }
 
 # ----- Object detection section -----
@@ -1027,7 +1249,7 @@ in_view() { # "person (2), car (1)" or "nothing"
 }
 
 detect_section() {
-    printf '<section id="detect"><h2>Object detection</h2>'
+    section_start detect "Object detection" $(detect_badge)
     if [ "$DETECT" = 1 ]; then
         printf '<dl>'
         item "Status" "$(detect_status)"
@@ -1048,20 +1270,26 @@ detect_section() {
         printf '</dl>'
     fi
     form_start detect
-    printf '<label>Object detection <select name="detect">'
+    printf '<div class="fields"><label>On or off <select name="detect">'
     options "$DETECT" 1 "On" 0 "Off"
-    printf '</select></label><fieldset><legend>Objects</legend>'
+    printf '</select></label><label>Lowest confidence <select name="confidence">'
+    options "$DETECT_CONFIDENCE" 40 "40%" 50 "50%" 60 "60% (recommended)" 70 "70%" 80 "80%" 90 "90%"
+    printf '</select></label><label>Analyses a second <select name="detect_fps">'
+    options "$DETECT_FPS" 1 1 2 2 5 5 10 10
+    printf '</select></label><label>Boxes on the main stream <select name="boxes">'
+    options "$DETECT_BOXES" 1 "On" 0 "Off"
+    printf '</select></label></div><fieldset><legend>Objects</legend>'
     # The default objects first; the rest of what the model knows folds away (open when one is ticked).
     defaults=",$(. "$VAIDK_DIR/defaults.conf"; echo "$DETECT_OBJECTS"),"
-    more=""
+    open_more=""
     for v in $(printf '%s' "$DETECT_OBJECTS" | tr ',' ' '); do
-        case "$defaults" in *",$v,"*) ;; *) more=' open' ;; esac
+        case "$defaults" in *",$v,"*) ;; *) open_more=' open' ;; esac
     done
     for pass in main more; do
         if [ $pass = main ]; then printf '<div class="objects">'
-        else printf '<details%s><summary>More objects</summary><div class="objects">' "$more"; fi
+        else printf '<details%s><summary>More objects</summary><div class="objects">' "$open_more"; fi
         objects_list | while read -r o; do
-            v=$(printf '%s' "$o" | tr ' ' '_')
+            v=${o// /_} # (this BusyBox sh has bash's substitution; a tr for each of 80 objects took 0.5 s)
             case "$defaults" in *",$v,"*) [ $pass = main ] || continue ;; *) [ $pass = more ] || continue ;; esac
             case ",$DETECT_OBJECTS," in *",$v,"*) c=' checked' ;; *) c='' ;; esac
             printf '<label class="check"><input type="checkbox" name="obj" value="%s"%s> %s</label>' "$v" "$c" "$o"
@@ -1069,15 +1297,12 @@ detect_section() {
         printf '</div>'
         if [ $pass = more ]; then printf '</details>'; fi
     done
-    printf '</fieldset><label>Lowest confidence <select name="confidence">'
-    options "$DETECT_CONFIDENCE" 40 "40%" 50 "50%" 60 "60% (recommended)" 70 "70%" 80 "80%" 90 "90%"
-    printf '</select></label><label>Analyses a second <select name="detect_fps">'
-    options "$DETECT_FPS" 1 1 2 2 5 5 10 10
-    printf '</select></label><label>Boxes on the main stream <select name="boxes">'
-    options "$DETECT_BOXES" 1 "On" 0 "Off"
-    printf '</select></label>'
-    printf '<p class="hint">The camera'"'"'s own detector (SSD MobileNet v1, trained on COCO) runs on its DSP and adds about 3%% to the processor load. It works from the sub stream, which stays on at 640x360 while detection is on, at most at the sub stream'"'"'s frame rate (%s fps). Labelled boxes are drawn into the main stream'"'"'s video: up to 10, or 6 with the date and name shown, people first; the sub stream stays clean for Frigate. Turning detection on or off restarts the streams; other changes apply within seconds.</p>' "$SUB_FPS"
-    printf '<button>Save</button></form></section>'
+    printf '</fieldset>'
+    hint "The camera's own detector runs on its DSP and works from the sub stream, which stays on at 640x360 while detection is on. Labelled boxes go on the main stream; the sub stream stays clean for Frigate."
+    more "About detection" "It is SSD MobileNet v1, trained on COCO, and adds about 3% to the processor load. It analyses at most at the sub stream's frame rate ($SUB_FPS fps). Up to 10 boxes are drawn, or 6 with the date and name shown, people first."
+    save_row "Save" "Turning it on or off restarts the streams; other changes apply within seconds."
+    printf '</form>'
+    section_end
 }
 
 # ----- MQTT section -----
@@ -1097,10 +1322,10 @@ mqtt_status() { # one line: what the MQTT service is doing
 }
 
 mqtt_section() {
-    printf '<section id="mqtt"><h2>MQTT</h2>'
+    section_start mqtt "MQTT" $(mqtt_badge)
     if [ "$MQTT" = 1 ]; then printf '<dl>'; item "Status" "$(mqtt_status)"; printf '</dl>'; fi
     form_start mqtt
-    printf '<label>MQTT <select name="mqtt">'
+    printf '<div class="fields"><label>On or off <select name="mqtt">'
     options "$MQTT" 1 "On" 0 "Off"
     printf '</select></label>'
     printf '<label>Broker <input name="mqtt_host" value="%s" maxlength="253" placeholder="192.168.1.10 or homeassistant.local" autocapitalize="none" autocomplete="off"></label>' "$(h "$MQTT_HOST")"
@@ -1108,59 +1333,67 @@ mqtt_section() {
     printf '<label>User name (blank for none) <input name="mqtt_user" value="%s" maxlength="64" autocapitalize="none" autocomplete="off"></label>' "$(h "$MQTT_USER")"
     if [ -s "$DATA_DIR/mqtt-password" ]; then ph="Saved; blank keeps it"; else ph=""; fi
     printf '<label>Password <input name="mqtt_pass" type="password" maxlength="128" placeholder="%s" autocomplete="new-password"></label>' "$ph"
-    printf '<label>Topic <input name="mqtt_topic" value="%s" maxlength="64" placeholder="vaidk/%s" autocapitalize="none" autocomplete="off"></label>' "$(h "$MQTT_TOPIC")" "$(h "$NAME")"
+    printf '<label>Topic <input name="mqtt_topic" value="%s" maxlength="64" placeholder="vaidk/%s" autocapitalize="none" autocomplete="off"></label></div>' "$(h "$MQTT_TOPIC")" "$(h "$NAME")"
     printf '<label class="check"><input type="checkbox" name="mqtt_discovery" value="1"%s> Add a sensor for each object to Home Assistant (MQTT discovery)</label>' \
         "$([ "$MQTT_DISCOVERY" = 1 ] && echo ' checked')"
     topic=$(h "${MQTT_TOPIC:-vaidk/$NAME}")
-    printf '<p class="hint">Publishes what object detection sees, so it needs detection on: <code>%s/status</code> (online or offline), and for each chosen object <code>%s/person</code> (ON or OFF) and <code>%s/person/count</code>, all retained, and <code>%s/detections</code> (JSON) after each analysis while something is in view. Plain MQTT 3.1.1, without TLS: the password and the messages cross your network unencrypted.</p>' \
-        "$topic" "$topic" "$topic" "$topic"
-    printf '<button>Save</button></form></section>'
+    hint "Publishes what object detection sees, so it needs detection on. Plain MQTT 3.1.1, without TLS: the password and the messages cross your network unencrypted."
+    more "Topics" "<code>$topic/status</code> (online or offline); for each chosen object <code>$topic/person</code> (ON or OFF) and <code>$topic/person/count</code>, all retained; and <code>$topic/detections</code> (JSON) after each analysis while something is in view."
+    save_row "Save"
+    printf '</form>'
+    section_end
 }
 
 # ----- HDMI section -----
 
-hdmi_status() { # one line: what the HDMI output shows
-    if [ "$HDMI" != 1 ]; then echo "Off"
-    elif pidof weston >/dev/null; then echo "Live view of the main stream"
-    else echo "Live view, starting"; fi
-}
-
 hdmi_section() {
-    printf '<section id="hdmi"><h2>HDMI output</h2>'
+    section_start hdmi "HDMI output" $(hdmi_badge)
     form_start hdmi
-    printf '<label>HDMI output <select name="hdmi">'
+    printf '<div class="fields"><label>Show <select name="hdmi">'
     options "$HDMI" 0 "Off" 1 "Live view of the main stream"
-    printf '</select></label>'
-    printf '<p class="hint">Live view shows the main stream on a monitor plugged into the camera'"'"'s HDMI port, with its on-screen text and, while object detection draws them, its boxes. The camera always sends 1920x1080 at 60 Hz without asking the monitor what it supports: use a computer monitor and a plain HDMI cable, without adapters or switches. Live view takes about a fifth of one processor core. Off, the display output is stopped, which saves about 0.8 W, nearly a third of the camera'"'"'s power. Turning it on or off restarts the streams.</p>'
-    printf '<button>Save</button></form></section>'
+    printf '</select></label></div>'
+    hint "Live view shows the main stream, with its on-screen text and detection boxes, on a monitor plugged into the camera's HDMI port. Use a computer monitor and a plain HDMI cable."
+    more "About live view" "The camera always sends 1920x1080 at 60 Hz without asking the monitor what it supports, so adapters, switches and some TVs won't show it. Live view takes about a fifth of one processor core. Off, the display output is stopped, which saves about 0.8 W, nearly a third of the camera's power."
+    save_row "Save" "Turning it on or off restarts the streams."
+    printf '</form>'
+    section_end
 }
 
 wifi_section() {
-    printf '<section id="wifi"><h2>Wi-Fi</h2>'
+    section_start wifi "Wi-Fi"
     if [ "$MODE" = lan ]; then
-        printf '<p class="hint">The camera moves to the new network right away, so this page stops responding. If it can'"'"'t join within a minute, it returns to the current network.</p>'
+        hint "The camera moves to the new network at once, so this page stops responding. If it can't join within a minute, it returns to the current network."
         if [ -n "$(qparam scan)" ]; then mode=fresh; else mode=cached; fi
     else
         mode=auto
     fi
     form_start wifi
     network_fields "$mode"
-    printf '<button>Join network</button></form></section>'
+    save_row "Join network"
+    printf '</form>'
+    section_end
 }
 
 device_section() {
-    printf '<section id="device"><h2>Camera name and admin account</h2>'
+    section_start device "Camera name and admin account"
     form_start device
-    printf '<label>Camera name <input name="name" value="%s" maxlength="32" required></label>' "$(h "$NAME")"
+    printf '<div class="fields"><label>Camera name <input name="name" value="%s" maxlength="32" required></label>' "$(h "$NAME")"
     account_fields
-    printf '<p class="hint">The admin account signs in to this page from your network and over SSH (<code>ssh %s@%s</code>).</p>' "$(h "$(admin_user)")" "$(h "${ip:-camera-ip}")"
-    printf '<button>Save</button></form></section>'
+    printf '</div>'
+    hint "The name is the page title, the name in Frigate's configuration and on the video, and the camera's host name. The admin account signs in to this page from your network and over SSH (<code>ssh $(h "$(admin_user)")@$(h "${ip:-camera-ip}")</code>)."
+    save_row "Save"
+    printf '</form>'
+    section_end
 }
 
 frigate_section() {
-    printf '<section><h2>Frigate</h2><p class="hint">For your Frigate configuration. Frigate'"'"'s go2rtc keeps one connection to each stream for recording and detection%s.%s</p><pre>' \
-        "$([ "$TALKBACK" = 1 ] && echo '; the live view uses a separate two-way stream, so talking never interrupts a recording. Talking needs WebRTC and a page on HTTPS: Frigate on HTTPS, or Home Assistant on HTTPS with the Advanced Camera Card (see the add-on'"'"'s README)')" \
-        "$([ "$ONVIF" = 1 ] && echo ' The onvif part gives Frigate'"'"'s live view pan, tilt and zoom controls and the presets saved above.')"
+    section_start frigate "Frigate configuration"
+    about="Frigate's go2rtc keeps one connection to each stream for recording and detection."
+    if [ "$TALKBACK" = 1 ]; then about="$about The live view uses a separate two-way stream, so talking never interrupts a recording. Talking needs WebRTC and a page on HTTPS: Frigate on HTTPS, or Home Assistant on HTTPS with the Advanced Camera Card (see the add-on's README)."; fi
+    if [ "$ONVIF" = 1 ]; then about="$about The onvif part gives Frigate's live view pan, tilt and zoom controls, and the presets saved on the Pan &amp; zoom tab."; fi
+    hint "Add this to your Frigate configuration. It follows this camera's settings, so copy it again after changing them. A click selects all of it."
+    hint "$about"
+    printf '<pre class="copy">'
     {
         url="rtsp://${ip:-camera-ip}"
         restream="rtsp://127.0.0.1:8554/$NAME"
@@ -1205,11 +1438,13 @@ frigate_section() {
             printf '    detect:\n      width: %s\n      height: %s\n      fps: 5\n' "$MAIN_WIDTH" "$MAIN_HEIGHT"
         fi
     } | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
-    printf '</pre></section>'
+    printf '</pre>'
+    section_end
 }
 
 maintenance_section() {
-    printf '<section><h2>Maintenance</h2><div class="row">'
+    section_start maintenance "Maintenance"
+    printf '<div class="actions">'
     form_start restart-streams; printf '<button class="secondary">Restart streams</button></form>'
     form_start reboot
     if [ "$MODE" = ap ]; then printf '<button class="secondary">Leave setup mode</button></form>'
@@ -1217,46 +1452,76 @@ maintenance_section() {
     printf '</div>'
     form_start reset danger
     printf '<label class="check"><input type="checkbox" name="confirm" value="yes"> Forget the Wi-Fi network, settings and admin account</label>'
-    printf '<button class="danger">Reset camera</button></form></section>'
+    printf '<div class="actions"><button class="danger">Reset camera</button></div></form>'
+    section_end
+}
+
+# ----- the settings: tabs -----
+
+PAGES="overview video audio ptz detect frigate system"
+page_label() {
+    case "$1" in
+        video) echo Video ;; audio) echo Audio ;; ptz) echo 'Pan &amp; zoom' ;; detect) echo Detection ;;
+        frigate) echo Frigate ;; system) echo System ;; *) echo Overview ;;
+    esac
+}
+
+top_bar() { # the camera's name and state, and the tabs
+    if [ -e "$RUN_DIR/streaming" ]; then state='<span class="pill ok">Streaming</span>'
+    else state='<span class="pill warn">Starting or recovering</span>'; fi
+    printf '<header class="top"><div class="bar"><div class="brand"><span class="name">%s</span>%s</div>' "$(h "$NAME")" "$state"
+    if [ "$MODE" = ap ]; then printf '<div class="who">Setup mode</div>'
+    else printf '<div class="who">Signed in as %s</div>' "$(h "$REMOTE_USER")"; fi
+    printf '</div><nav class="tabs" aria-label="Settings">'
+    for tab in $PAGES; do
+        if [ "$tab" = "$PAGE" ]; then cur=' aria-current="page"'; else cur=''; fi
+        printf '<a href="%s?p=%s"%s>%s</a>' "$SELF" "$tab" "$cur" "$(page_label "$tab")"
+    done
+    printf '</nav></header>'
 }
 
 settings_page() {
-    page_start "$NAME"
-    printf '<header><h1>%s</h1>' "$(h "$NAME")"
+    PAGE=$(qparam p)
+    case "$PAGE" in video|audio|ptz|detect|frigate|system) ;; *) PAGE=overview ;; esac
+    MSG_S=$(qparam s)
+    TOKEN=$(token)
+    ip=""
+    case "$PAGE" in overview|frigate|system) if wifi_connected; then ip=$(wlan_ip); fi ;; esac
+    case "$PAGE" in
+        overview) page_start "$NAME" ;;
+        ptz) page_start "$NAME - Pan and zoom" ;;
+        *) page_start "$NAME - $(page_label "$PAGE")" ;;
+    esac
+    top_bar
+    printf '<main>'
     if [ "$MODE" = ap ]; then
-        printf '<p>Setup mode: you are connected to the camera'"'"'s own Wi-Fi. Choose <b>Leave setup mode</b> when you are done.</p>'
-    else
-        printf '<p>Signed in as %s</p>' "$(h "$REMOTE_USER")"
+        printf '<div class="banner"><p>Setup mode: you are connected to the camera'"'"'s own Wi-Fi. When you are done, leave setup mode: the camera restarts on your network.</p>'
+        SECTION=""; form_start reboot; printf '<button>Leave setup mode</button></form></div>'
     fi
-    printf '</header>'
-    show_message
-    status_section
-    system_section
-    streams_section
-    picture_section
-    overlay_section
-    talk_section
-    ptz_section
-    detect_section
-    mqtt_section
-    hdmi_section
-    wifi_section
-    device_section
-    frigate_section
-    maintenance_section
+    if [ -z "$MSG_S" ]; then show_message; fi
+    case "$PAGE" in
+        overview) overview_page ;;
+        video) streams_section; picture_section; overlay_section; hdmi_section ;;
+        audio) mic_section; talk_section ;;
+        ptz) ptz_section ;;
+        detect) detect_section; mqtt_section ;;
+        frigate) frigate_section ;;
+        system) system_section; wifi_section; device_section; maintenance_section ;;
+    esac
     page_end
 }
 
 wifi_page() {
     st=$(cat "$RUN_DIR/wifi-try" 2>/dev/null)
     ssid=$(cat "$RUN_DIR/wifi-try-ssid" 2>/dev/null)
+    again="$SELF?p=system#wifi"
     case "$st" in
         connecting)
-            page_start "Connecting" 3
+            notice_start "Connecting" 3
             printf '<h1>Joining %s</h1><p>This takes up to a minute.</p>' "$(h "$ssid")" ;;
         ok\ *)
             ip=${st#ok }
-            page_start "Connected"
+            notice_start "Connected"
             printf '<h1>Connected</h1><p>The camera joined <b>%s</b> at <b>%s</b>.</p>' "$(h "$ssid")" "$(h "$ip")"
             if [ "$MODE" = ap ]; then
                 printf '<p>It restarts in about 20 seconds to finish setup. Then switch this phone or computer back to your usual Wi-Fi and open <a href="http://%s/">http://%s/</a> (sign in with the admin account).</p>' "$ip" "$ip"
@@ -1265,24 +1530,24 @@ wifi_page() {
             fi
             printf '<p>Streams: <code>rtsp://%s:8900/live</code> and <code>rtsp://%s:8901/live</code></p>' "$ip" "$ip" ;;
         failed\ wrong-password)
-            page_start "Couldn't connect"
-            printf '<h1>Couldn'"'"'t join %s</h1><p>The Wi-Fi password was rejected.</p><p><a href="%s">Try again</a></p>' "$(h "$ssid")" "$SELF" ;;
+            notice_start "Couldn't connect"
+            printf '<h1>Couldn'"'"'t join %s</h1><p>The Wi-Fi password was rejected.</p><p><a href="%s">Try again</a></p>' "$(h "$ssid")" "$again" ;;
         failed\ no-address)
-            page_start "Couldn't connect"
-            printf '<h1>Couldn'"'"'t join %s</h1><p>The camera joined it but didn'"'"'t get an address from the router.</p><p><a href="%s">Try again</a></p>' "$(h "$ssid")" "$SELF" ;;
+            notice_start "Couldn't connect"
+            printf '<h1>Couldn'"'"'t join %s</h1><p>The camera joined it but didn'"'"'t get an address from the router.</p><p><a href="%s">Try again</a></p>' "$(h "$ssid")" "$again" ;;
         failed*)
-            page_start "Couldn't connect"
-            printf '<h1>Couldn'"'"'t find %s</h1><p>Check the network name and that the camera is in range.</p><p><a href="%s">Try again</a></p>' "$(h "$ssid")" "$SELF" ;;
+            notice_start "Couldn't connect"
+            printf '<h1>Couldn'"'"'t find %s</h1><p>Check the network name and that the camera is in range.</p><p><a href="%s">Try again</a></p>' "$(h "$ssid")" "$again" ;;
         *)
             redirect "$SELF" ;;
     esac
-    page_end
+    notice_end
 }
 
 entry_page() {
-    page_start "Finish setup"
+    notice_start "Finish setup"
     printf '<h1>Finish setting up this camera</h1><p>It has no admin account yet. Hold its power button for 5 seconds until the lights blink, join its Wi-Fi network <b>%s</b> (password on the sticker under the camera), then open <a href="%s">%s</a>.</p>' "$(h "$(ap_ssid)")" "$AP_URL" "$AP_URL"
-    page_end
+    notice_end
 }
 
 cgi() {

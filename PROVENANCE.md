@@ -693,6 +693,39 @@ Details: [device/web/README.md](device/web/README.md).
 | Phones open a sign-in page only if their connectivity checks are answered | Answers for the checks of Apple, Android and Windows |
 | Another web site could submit the forms | A token in every form, new at each boot |
 
+### The tabs
+
+**In the way.** Each feature had added a section to one long page: 14 of them, each dropdown the full
+width of a narrow column, about 10,300 pixels tall on a phone, and 3.8 s to load, because the page
+measured everything, the System section's one-second sample included. Saving brought you back to the
+top of the page, with the message there.
+
+**What the add-on does.** Seven tabs, each a page of its own; cards with an On or Off badge, fields
+side by side where there is room, and the longer explanations folded away
+([the pages](device/web/README.md#the-pages)).
+
+| Question | Options | Chosen |
+|---|---|---|
+| Layout | Tabs with an overview; one page with folding sections and a menu | Tabs with an overview (your choice) |
+| How tabs work | JavaScript on one page; a page for each tab | A page for each tab (`?p=`): no JavaScript, and each page measures only what it shows |
+| After saving | Back to the top of the page; back to the card | Back to the card (`&s=` and an anchor), with the message inside it |
+| The microphone | With the streams, as before; next to talk-back | An **Audio** tab with both. The microphone has a form and a handler of its own (`post_audio`), which restarts the streams only when something changed |
+
+Tested on the camera, streaming to Frigate:
+
+| Test | Result |
+|---|---|
+| Each tab's load time, against 3.8 s for the old page | Overview about 1.5 s (half a second of it measuring the processor), Video 0.47 s, Audio 0.47 s, Pan & zoom 0.51 s, Detection 0.57 s, Frigate 0.58 s, System 2.2 s |
+| The Detection tab | 1.9 s at first: a `tr` for each of the model's 80 labels, twice. With the shell's own substitution, 0.57 s |
+| Every form that doesn't restart the streams, posted unchanged, with a value not offered, and with a wrong token | Each came back to its own card, with its message or error there. Nothing restarted; the only settings written were the two talk-back values, saved as the defaults they were |
+| **Streams** saved without the microphone's fields | The audio settings unchanged; the streams restarted with sound, and Frigate reconnected |
+| The presets: saved, a bad name, deleted | Each message in the **View and presets** card |
+| In Edge: a save; then **Test speaker** and the Overview's **Restart streams**, their requests caught before they left | Back at the Picture card with its message. **Test speaker** sends the chime form (through the `form` attribute) and the other button the restart, each naming its tab and card |
+| Setup mode, first-time setup, the Wi-Fi progress pages and the page shown before setup, rendered on the camera for a client on the setup network | Every page rendered, with nothing on standard error; **Leave setup mode** on every tab |
+| Screenshots, light and dark, 390 and 1280 pixels wide | Nothing cut off or overlapping, once a few choices had shorter names |
+
+Not tested: a real phone on the setup network; those pages were rendered on the camera.
+
 ### SSH at setup
 
 **In the way.** The vendor setup's first page had an **SSH enabled** box above an optional SSH login

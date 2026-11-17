@@ -342,8 +342,7 @@ Rotating or flipping the image isn't possible on this firmware; mount the camera
 The camera's two built-in microphones feed the main stream. The camera's audio processing removes
 steady background noise, so a quiet room sounds nearly silent and voices come through clearly.
 
-- **Turn audio on or off:** on the setup page under **Camera streams > Microphone**, or during
-  first-time setup.
+- **Turn audio on or off:** on the setup page's **Audio** tab, or during first-time setup.
 - **Gain:** 0 to +40 dB (default +24 dB). Raise it if speech is faint in recordings; lower it if
   loud sounds distort.
 - **Privacy:** recording sound is regulated in many places, often more strictly than video. Let
@@ -370,27 +369,26 @@ How it works: [device/camera/README.md](device/camera/README.md#hdmi-live-view).
 
 ## Change settings
 
-Open `http://<camera-ip>/` and sign in with the admin account. The page shows the camera's status
-(Wi-Fi, address, stream health, microphone, talk-back, pan, tilt and zoom, object detection, MQTT,
-HDMI output) and its health (processor, memory, storage, flash, temperatures, battery and power, Wi-Fi
-link, stream viewers and crashes; [details](device/web/README.md#the-system-section)), and lets you:
+Open `http://<camera-ip>/` and sign in with the admin account. The settings are in tabs:
 
-- change the main and sub stream resolution, frame rate, bitrate and codec;
-- turn the microphone on or off and set its gain;
-- adjust the picture, and choose the on-screen text and its time zone;
-- turn talk-back on or off, set the speaker volume and test the speaker;
-- turn pan, tilt and zoom on or off, show the whole picture, and save, use or delete presets;
-- turn object detection on or off, and choose what it reports and how;
-- publish detections to an MQTT broker;
-- turn HDMI live view on or off;
-- move the camera to another Wi-Fi network;
-- rename the camera and change the admin account;
-- restart the streams or the camera, or reset it.
+- **Overview:** the streams' addresses and health, what object detection sees, the camera's health
+  (processor, temperatures, memory, storage, battery and power, crashes), Wi-Fi, and which features
+  are on. Each links to its settings.
+- **Video:** the main and sub stream resolution, frame rate, bitrate and codec; the picture; the
+  on-screen text and its time zone; HDMI live view.
+- **Audio:** the microphone and its gain; talk-back, the speaker volume, and a speaker test.
+- **Pan & zoom:** pan, tilt and zoom on or off; show the whole picture; save, use or delete presets.
+- **Detection:** object detection, what it reports and how; publishing detections to an MQTT broker.
+- **Frigate:** the configuration to add to Frigate, built from the current settings.
+- **System:** the camera's health in detail (flash, Wi-Fi link and traffic, stream viewers, busiest
+  programs; [details](device/web/README.md#the-system-section)); another Wi-Fi network; the camera's
+  name and the admin account; restarting the streams or the camera, or resetting it.
 
-Picture, speaker volume, microphone muting, presets, object detection's settings and MQTT apply
-straight away; the other changes restart the streams, except turning pan, tilt and zoom on or off,
-which restarts only that service. Settings the page doesn't show, such as the keyframe interval, the
-Wi-Fi fallback timers and restarting after a crash, can be changed by hand ([how](device/README.md#settings)).
+Saving brings you back to the same card, with a note saying what happened. Picture, speaker volume,
+microphone muting, presets, object detection's settings and MQTT apply straight away; the other
+changes restart the streams, except turning pan, tilt and zoom on or off, which restarts only that
+service. Settings the page doesn't show, such as the keyframe interval, the Wi-Fi fallback timers and
+restarting after a crash, can be changed by hand ([how](device/README.md#settings)).
 
 ## Status lights
 
@@ -412,8 +410,9 @@ Wi-Fi fallback timers and restarting after a crash, can be changed by hand ([how
   setup network and open `http://192.168.143.1/`. You don't need to sign in there, so this is also
   how you set a new admin password. The camera leaves setup mode once nobody has used it for a few
   minutes, or when you select **Leave setup mode**.
-- **Reset:** on the setup page, tick the box under **Maintenance** and select **Reset camera**. The
-  camera forgets its Wi-Fi network, settings and admin account, and restarts in setup mode.
+- **Reset:** on the setup page's **System** tab, tick the box under **Maintenance** and select
+  **Reset camera**. The camera forgets its Wi-Fi network, settings and admin account, and restarts in
+  setup mode.
 - **Forgot the admin password:** use setup mode (above), or with the camera on USB run
   `adb shell sh /opt/vaidk/web/ui.sh set-admin <user>` and type a new password.
 
@@ -475,10 +474,10 @@ computer with `ssh-keygen -R <camera-ip>`.
 - **MQTT doesn't connect:** the setup page's **MQTT** section shows the broker's answer, such as a
   wrong user name or password. Check that object detection is on, and that the broker accepts
   connections from the camera's address on its port (1883 by default).
-- **Nothing on the monitor:** check that the setup page's status shows **HDMI output** as live view,
-  and connect a computer monitor straight to the camera with a plain HDMI cable; adapters, switches
-  and some TVs don't show the camera's fixed 1080p signal. `journalctl -u vaidk-camera` shows
-  `live view:` when it starts.
+- **Nothing on the monitor:** check that the setup page's Overview shows **HDMI output** as
+  **Live view**, and connect a computer monitor straight to the camera with a plain HDMI cable;
+  adapters, switches and some TVs don't show the camera's fixed 1080p signal.
+  `journalctl -u vaidk-camera` shows `live view:` when it starts.
 
 ## Security notes
 

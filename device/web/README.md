@@ -7,7 +7,7 @@ the installers' status check.
 | File | What it is |
 |---|---|
 | [ui.sh](ui.sh) | Every page and form, and the commands below |
-| [www/](www/) | Document root: `cgi-bin/index.cgi` (`/`), `cgi-bin/admin.cgi` (signed in), `style.css`, and the captive-portal answers |
+| [www/](www/) | Document root: `cgi-bin/index.cgi` (`/`), `cgi-bin/admin.cgi` (signed in), `style.css` (light and dark, phone to desktop, no JavaScript), and the captive-portal answers |
 | [vaidk-web.service](vaidk-web.service) | systemd unit. Before starting `httpd`, writes its sign-in rule (`/run/vaidk/httpd.conf`) |
 
 ## Who gets which page
@@ -39,24 +39,35 @@ the installers' status check.
 ([`wifi.sh try`](../wifi/README.md#joining-a-network-wifish-try-file-yes)). A progress page shows the
 camera's new address, then the camera restarts.
 
-**Settings:**
+**Settings**, in tabs. Each tab is a page of its own (`?p=video` and so on), so it measures only what
+it shows. Each setting area is a card, with an On or Off badge where it has one; longer explanations
+fold under **About ...**. Saving a card brings you back to it (`?p=<tab>&s=<card>#<card>`), with the
+message inside it.
 
-| Section | What it shows or changes |
-|---|---|
-| Status | Wi-Fi network and signal, address, stream health, the stream URLs, microphone, talk-back, pan, tilt and zoom, object detection, MQTT, HDMI output |
-| System | The camera's health, measured as the page loads ([what each line shows](#the-system-section)). **Refresh** measures again |
-| Camera streams | Main: resolution, frame rate, bitrate, codec. Sub: on or off, resolution, frame rate, bitrate; while object detection is on, the sub stream stays on at 640x360 and only its frame rate and bitrate can change. Microphone: on or off, gain. Saving restarts the camera service |
-| Picture | Light flicker, exposure, white balance, colour and sharpness. Saving applies them at once (`camd.sh reload`) |
-| On-screen text | Date and time, camera name or both; the corner; main stream or both; the time zone (a list, or a POSIX string). Saving updates `qmmf-server`'s time zone if it changed (`camd.sh tz`) and restarts the camera service |
-| Talk-back | On or off, speaker volume, muting the microphones while the speaker plays. Volume and muting apply at once; turning talk-back on or off restarts the camera service. **Test speaker** plays a chime (`camd.sh chime`) |
-| Pan, tilt and zoom | The [ONVIF service](../onvif/README.md) on or off (saving restarts it), the current zoom, **Show the whole picture**, and the presets: go to, delete, or save the current view under a name. It asks the service over its local address ([the setup page](../onvif/README.md#the-setup-page)) |
-| Object detection | While it is on, what the [detector](../detect/README.md) is doing: running (analyses a second and the time each takes), starting, or why it stopped; what is in view; when each object was last seen; the latest detections, in the on-screen clock's time zone; the model and SNPE version. Then: on or off, the objects to report (the defaults, and **More objects** with the rest of the 80), the lowest confidence, analyses a second, and boxes on the main stream. Turning it on sets the sub stream to 640x360 if it wasn't, and says so; turning it on or off restarts the camera service and the detector; objects and confidence restart only the detector; the rate and the boxes apply at once (`camd.sh reload`) |
-| MQTT | While it is on, the [MQTT service](../mqtt/README.md)'s state: connected and messages sent, connecting, the broker's answer when it refuses (such as a wrong password), or waiting for object detection. Then: on or off, the broker and port, user name and password (blank keeps the saved one; kept apart from the settings, readable only by root), the topic prefix, and Home Assistant discovery. Saving restarts the service |
-| HDMI output | Off, or live view of the main stream on a monitor plugged into the camera ([HDMI live view](../camera/README.md#hdmi-live-view)). Changing it restarts the camera service, which starts or stops the vendor's display server |
-| Wi-Fi | Join another network |
-| Camera name and admin account | The name (page title, Frigate name, on-screen name, DHCP host name), the admin user and password |
-| Frigate | Frigate configuration built from the current settings: go2rtc streams (with a separate two-way stream when talk-back is on) and the camera entry, with its `onvif` part when pan, tilt and zoom is on |
-| Maintenance | Restart the streams; restart the camera (on the setup network: leave setup mode); reset the camera |
+| Tab | Card | What it shows or changes |
+|---|---|---|
+| Overview | Streams | Streaming or recovering; each stream's address and settings; the players connected. **Restart streams** |
+| | Object detection | Off, or what the [detector](../detect/README.md) is doing and what is in view |
+| | Health | Processor (measured over half a second), temperatures, memory, storage, battery and power (a warning on a computer's USB port), crashes since start, time running |
+| | Wi-Fi | Network, signal, address and link, or the saved network when it isn't connected |
+| | Features | Microphone, talk-back, pan, tilt and zoom, on-screen text, MQTT and HDMI output: on or off, each a link to its card |
+| Video | Streams | Main: resolution, frame rate, bitrate, codec. Sub: on or off, resolution, frame rate, bitrate; while object detection is on, the sub stream stays on at 640x360 and only its frame rate and bitrate can change. Saving restarts the camera service |
+| | Picture | Light flicker, exposure, white balance, colour and sharpness. Saving applies them at once (`camd.sh reload`) |
+| | On-screen text | Date and time, camera name or both; the corner; main stream or both; the time zone (a list, or a POSIX string under **Another time zone**). Saving updates `qmmf-server`'s time zone if it changed (`camd.sh tz`) and restarts the camera service |
+| | HDMI output | Off, or live view of the main stream on a monitor plugged into the camera ([HDMI live view](../camera/README.md#hdmi-live-view)). Changing it restarts the camera service, which starts or stops the vendor's display server |
+| Audio | Microphone | On or off, and the gain. Saving restarts the camera service when either changed |
+| | Talk-back | On or off, speaker volume, muting the microphones while the speaker plays. Volume and muting apply at once; turning talk-back on or off restarts the camera service. **Test speaker** plays a chime (`camd.sh chime`) |
+| Pan & zoom | Pan, tilt and zoom | The [ONVIF service](../onvif/README.md) on or off; saving restarts it |
+| | View and presets | While it is on: the current zoom, **Show the whole picture**, and the presets: go to, delete, or save the current view under a name. It asks the service over its local address ([the setup page](../onvif/README.md#the-setup-page)) |
+| Detection | Object detection | While it is on, what the detector is doing: running (analyses a second and the time each takes), starting, or why it stopped; what is in view; when each object was last seen; the latest detections, in the on-screen clock's time zone; the model and SNPE version. Then: on or off, the lowest confidence, analyses a second, boxes on the main stream, and the objects to report (the defaults, and **More objects** with the rest of the 80). Turning it on sets the sub stream to 640x360 if it wasn't, and says so; turning it on or off restarts the camera service and the detector; objects and confidence restart only the detector; the rate and the boxes apply at once (`camd.sh reload`) |
+| | MQTT | While it is on, the [MQTT service](../mqtt/README.md)'s state: connected and messages sent, connecting, the broker's answer when it refuses (such as a wrong password), or waiting for object detection. Then: on or off, the broker and port, user name and password (blank keeps the saved one; kept apart from the settings, readable only by root), the topic prefix, and Home Assistant discovery. Saving restarts the service |
+| Frigate | Frigate configuration | Built from the current settings: go2rtc streams (with a separate two-way stream when talk-back is on) and the camera entry, with its `onvif` part when pan, tilt and zoom is on. A click selects all of it |
+| System | System | The camera's health in detail, measured as the page loads ([what each line shows](#the-system-section)). **Measure again** |
+| | Wi-Fi | Join another network |
+| | Camera name and admin account | The name (page title, Frigate name, on-screen name, DHCP host name), the admin user and password |
+| | Maintenance | Restart the streams; restart the camera (on the setup network: leave setup mode); reset the camera |
+
+On the setup network, every tab also shows a **Leave setup mode** button.
 
 **Reset camera** forgets the Wi-Fi network, the settings, the pan, tilt and zoom presets and the admin
 account, then restarts in setup mode.
@@ -64,7 +75,8 @@ account, then restarts in setup mode.
 ### The System section
 
 `ui.sh` reads the kernel's counters twice, one second apart, and works out the rates from the
-difference, so the settings page takes about a second longer to load.
+difference, so the System tab takes about a second longer to load. The Overview's Health tile reads
+only the processor's counters, half a second apart.
 
 | Line | What it shows | Read from |
 |---|---|---|
@@ -105,6 +117,8 @@ The admin account is a Linux user: it signs in to this page and over SSH, and ca
 ## Safeguards
 
 - Every form carries a token, new at each boot (`/run/vaidk/csrf`), so another site can't submit it.
+- The tab and card a form returns to go into the redirect only if they are one of the tabs and a
+  short lowercase name.
 - Every field is checked: camera settings must be one of the offered choices (or the value already
   saved, so a setting changed by hand survives saving the page); names, user names and passwords
   have length and character limits; control characters are refused.

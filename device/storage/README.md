@@ -48,9 +48,10 @@ signal and the program's name instead. That command:
 2. adds `TIME NAME SIGNAL` to `/run/vaidk/crashes`, which keeps the last 50;
 3. writes `<name> crashed (signal N); no crash dump was kept` to the kernel log, and so to the journal.
 
-The setup page's **System** section counts the crashes since the camera started, and shows the
-latest. A crash before the service started still leaves a dump in `/var/tmp`; the first cleanup
-deletes it and records it the same way. Stopping the service puts the vendor's pattern back.
+The setup page counts the crashes since the camera started, and shows the latest: on the Overview
+when there are any, and in the **System** section. A crash before the service started still leaves a
+dump in `/var/tmp`; the first cleanup deletes it and records it the same way. Stopping the service
+puts the vendor's pattern back.
 
 ## Cleanup
 
