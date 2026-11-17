@@ -27,9 +27,9 @@ boots, and how the add-on is installed, set up and removed.
 flowchart TB
     you["You<br/>Frigate, Home Assistant, VLC or another RTSP player · a browser<br/>the installers over USB · SSH, optional"]
     addon["The add-on, in /opt/vaidk<br/>camera program · RTSP server · ONVIF service · object detector<br/>MQTT client · Wi-Fi watchdog · setup page · boot script<br/>status-light stand-in · crash recovery · storage upkeep"]
-    vendor["The camera's own software, kept<br/>qmmf-server with the camera and audio HALs<br/>video analytics and SNPE · altekflow · Wi-Fi tools · sshd · adbd"]
+    vendor["The camera's own software, kept<br/>qmmf-server with the camera and audio HALs<br/>video analytics and SNPE · weston · altekflow · Wi-Fi tools · sshd · adbd"]
     fw["Qualcomm firmware and Linux 4.9, unchanged<br/>32-bit, read-only root file system"]
-    hw["Vision AI DevKit<br/>Qualcomm QCS603 · 8 MP Sony IMX334 sensor<br/>microphones · speaker · Wi-Fi · three lights · power button"]
+    hw["Vision AI DevKit<br/>Qualcomm QCS603 · 8 MP Sony IMX334 sensor<br/>microphones · speaker · Wi-Fi · HDMI port · three lights · power button"]
     you --> addon
     you --> vendor
     addon --> vendor
@@ -47,18 +47,19 @@ flowchart TB
     class hw hard
 ```
 
-- **Hardware.** The camera board, its sensor, microphones, speaker, Wi-Fi, lights and power button.
-  [ASSESSMENT.md](ASSESSMENT.md) lists it all.
+- **Hardware.** The camera board, its sensor, microphones, speaker, Wi-Fi, HDMI port, lights and power
+  button. [ASSESSMENT.md](ASSESSMENT.md) lists it all.
 - **Firmware and kernel.** Qualcomm's boot chain, Linux 4.9, and the firmware of the image
   processor, the video encoder and the DSPs, as the camera shipped them. The add-on never touches
   them.
 - **The camera's own software.** `qmmf-server` runs the sensor, the image processor, the video
   encoders, the microphones and the speaker; Qualcomm's video analytics libraries run the object
-  detector's model on the DSP; `altekflow` drives the lights and the power button; the vendor's Wi-Fi
-  tools run the Wi-Fi client and the setup network. The add-on uses them as they are, and changes a
-  few things around them: its own copy of the boot script runs instead of the vendor's, the vendor
-  preview server is disabled, `qmmf-server` gets a time zone, the detector's configuration takes the
-  vendor's place while detection is on, and the admin account is an ordinary Linux user.
+  detector's model on the DSP; weston drives the HDMI output; `altekflow` drives the lights and the
+  power button; the vendor's Wi-Fi tools run the Wi-Fi client and the setup network. The add-on uses
+  them as they are, and changes a few things around them: its own copy of the boot script runs instead
+  of the vendor's, the vendor preview server is disabled, `qmmf-server` gets a time zone, the
+  detector's configuration takes the vendor's place while detection is on, weston runs only for HDMI
+  live view, and the admin account is an ordinary Linux user.
 - **The add-on.** Nine systemd services and the boot script, in `/opt/vaidk`. Your settings are in
   `/data/misc/vaidk`.
 - **You.** RTSP players and NVRs, a browser for the setup page, the installers over USB, and SSH if
@@ -69,7 +70,7 @@ flowchart TB
 | Component | Runs as | What it does | Details |
 |---|---|---|---|
 | Boot script | `InitCamx.service`, through a drop-in | The vendor's boot sequence without its IoT Hub step: joins the saved Wi-Fi network, or opens the setup network | [device/boot](device/boot/README.md) |
-| Camera program | `vaidk-camera.service` | `vaidk-camd` drives the camera, the encoders, the microphone and the speaker through `qmmf-server`, and applies the picture settings and on-screen text | [device/camera](device/camera/README.md), [camd](camd/README.md) |
+| Camera program | `vaidk-camera.service` | `vaidk-camd` drives the camera, the encoders, the microphone and the speaker through `qmmf-server`, applies the picture settings and on-screen text, and with HDMI live view on shows the main stream on a monitor | [device/camera](device/camera/README.md), [camd](camd/README.md) |
 | RTSP server | `vaidk-rtsp.service` | `rtspd.py`: the main stream with audio and the talk-back channel on port 8900, the sub stream on port 8901 | [device/rtsp](device/rtsp/README.md) |
 | Pan, tilt and zoom | `vaidk-onvif.service` | `onvifd.py`: the ONVIF service on port 8080, through which Frigate and Home Assistant find the streams and move the digital view; keeps the view and presets | [device/onvif](device/onvif/README.md) |
 | Object detection | `vaidk-detect.service` | `vaidk-detect` runs the camera's own detector (Qualcomm's video analytics manager and the vendor's model, on the DSP) on frames from `vaidk-camd`, sends back boxes for the main stream, and reports what it sees. Off by default | [device/detect](device/detect/README.md), [camd](camd/README.md#object-detection) |
@@ -84,7 +85,8 @@ The vendor software the add-on relies on, and what it does now:
 
 | Vendor software | Role |
 |---|---|
-| `qmmf-server` | The camera service: sensor, image processing, H.264 and H.265 encoders, overlays, microphones and AAC, and the player that drives the speaker. `vaidk-camd` uses it through Qualcomm's client libraries. A drop-in gives it the on-screen clock's time zone |
+| `qmmf-server` | The camera service: sensor, image processing, H.264 and H.265 encoders, overlays, microphones and AAC, and the player that drives the speaker. `vaidk-camd` uses it through Qualcomm's client libraries. A drop-in gives it the on-screen clock's time zone; for HDMI live view, `camd.sh` has it keep its frames uncompressed (`persist.qmmf.ubwcstream.enable=0`) |
+| `weston` (`init_display.service`) | The display server for the HDMI port. The vendor ran it all the time, an empty desktop costing about 0.8 W; a drop-in now lets it start only for HDMI live view, and `vaidk-camd` shows the main stream through it with Qualcomm's display client (`libqmmf_display_client`) |
 | Video analytics: `libvam_interface`, VAM, `libEngine_ML`, SNPE | The object detector. `vaidk-detect` loads them into its own process: the video analytics manager (VAM) hands each frame to the ML engine, which runs the model with SNPE on the Hexagon DSP |
 | The vision sample's Docker image | Unused as a container. The object detector's model is copied from it once, or from the copy of the image the firmware keeps on its system partition |
 | `qmmf-webserver` | The vendor media server. Unused and blocked from the network, but left running: its start-up includes an audio calibration step, which the camera service waits for |
@@ -239,6 +241,35 @@ flowchart LR
   datagrams to `mqttd.py`, which publishes them; it never waits for it. When the detector starts again
   or stops, `mqttd.py` publishes what was in view as gone ([topics](device/mqtt/README.md#topics)).
 
+### HDMI live view
+
+```mermaid
+flowchart LR
+    qmmf["qmmf-server<br/>main stream, with its text and boxes"] -- "copies of its frames, NV12" --> camd["vaidk-camd"]
+    camd -- "Qualcomm's display client<br/>Wayland, a buffer per frame" --> weston["weston<br/>the vendor's display server"]
+    weston -- "a display plane" --> bridge["DSI · LT9611 bridge"]
+    bridge -- "HDMI, 1920x1080 at 60 Hz" --> monitor["Monitor"]
+    classDef use fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
+    classDef mod fill:#dae8fc,stroke:#6c8ebf,color:#1a1a1a
+    classDef os fill:#fff2cc,stroke:#d6b656,color:#1a1a1a
+    classDef hard fill:#f5f5f5,stroke:#666666,color:#1a1a1a
+    class monitor use
+    class camd mod
+    class qmmf,weston os
+    class bridge hard
+```
+
+- **Only while it is on.** Before `vaidk-camd` starts, `camd.sh` starts weston (the vendor's
+  `init_display.service`, which a drop-in otherwise keeps from starting) and has `qmmf-server` keep
+  its frames uncompressed; with live view off, it stops weston, which turns the output off and saves
+  about 0.8 W ([HDMI live view](device/camera/README.md#hdmi-live-view)).
+- **The main stream's picture.** The copies carry the main stream's zoom, on-screen text and detection
+  boxes; a 4K stream is scaled to 1920x1080.
+- **No hot-plug.** The bridge can't tell whether a monitor is plugged in, so the output runs whenever
+  live view is on.
+- **If weston stops,** `vaidk-camd` stops too; systemd starts it again, and `camd.sh` starts weston
+  first.
+
 ### Status and lights
 
 ```mermaid
@@ -281,6 +312,7 @@ flowchart LR
 | `detect/` (a folder) | `detect.sh`: the engine configuration, and `vam/`, a 4 MB RAM file system for VAM's database | VAM, in `vaidk-detect`, through links in `/data/misc/camera` and `/data/misc/vam` |
 | `events.sock` | `mqttd.py`, which binds it | `vaidk-detect` sends it what it sees ([events](device/mqtt/README.md#how-events-arrive)) |
 | `mqtt.state` | `mqttd.py`, when its state changes and every 10 s | The setup page |
+| `hdmi-on` | `camd.sh`, while HDMI live view is on | `init_display.service`, which starts only while it exists ([HDMI live view](device/camera/README.md#hdmi-live-view)) |
 | `rtsp.status` | `rtspd.py`, every second | The setup page; you ([fields](device/rtsp/README.md#status)) |
 | `streaming` | `rtspd.py`, while every enabled stream flows | The light stand-in, the setup page, `ui.sh info` |
 | `boot-wifi-done` | The boot script, after its Wi-Fi step | The Wi-Fi watchdog, which waits for it; `ui.sh info` |
@@ -311,6 +343,7 @@ flowchart LR
     load --> mqttsh["mqtt.sh"]
     camd -- "settings at start<br/>live ones on SIGHUP" --> prog["vaidk-camd"]
     camd -- "camd.sh tz: drop-in" --> qmmf["qmmf-server<br/>time zone"]
+    camd -- "HDMI: start or stop" --> weston["weston<br/>display server"]
     detsh -- "settings at start" --> det["vaidk-detect"]
     mqttsh -- "settings at start" --> mq["mqttd.py"]
     classDef use fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
@@ -320,7 +353,7 @@ flowchart LR
     class page,hand use
     class defaults,conf data
     class load,camd,wifi,net,ui,onvif,detsh,mqttsh,prog,det,mq mod
-    class qmmf os
+    class qmmf,weston os
 ```
 
 - **Defined once.** Every setting, its default and what it means is in
@@ -355,6 +388,7 @@ flowchart LR
 | `DETECT_OBJECTS`, `DETECT_CONFIDENCE` | `detect.sh`, which passes them to `vaidk-detect` and writes the confidence into VAM's configuration | When `vaidk-detect` restarts. Saving **Object detection** restarts it when they changed |
 | `DETECT_FPS`, `DETECT_BOXES` | `camd.sh`, which writes them to `/run/vaidk/camd.conf` for `vaidk-camd` | At once: saving **Object detection** runs `camd.sh reload` |
 | `MQTT`, `MQTT_HOST`, `MQTT_PORT`, `MQTT_USER`, `MQTT_TOPIC`, `MQTT_DISCOVERY` | `mqtt.sh`, which passes them to `mqttd.py` | When `vaidk-mqtt` restarts. Saving **MQTT**, turning detection on or off, changing its objects or renaming the camera restarts it |
+| `HDMI` | `camd.sh`, which starts or stops the vendor's display server and passes it to `vaidk-camd` | When the camera service restarts. Saving **HDMI output** restarts it |
 | `RESTART_ON_CRASH` | `recovery.sh` | At the next boot, or when `vaidk-recovery` restarts |
 
 Besides the settings, the add-on keeps:
@@ -369,7 +403,7 @@ Besides the settings, the add-on keeps:
 | `/data/misc/camera`, `/data/misc/vam` (the vendor's) | While detection is on: the vendor's engine configuration set aside as `va-snpe-engine-library_config.json.vendor`, and links to the add-on's configuration, model, labels and VAM database folder. Put back when detection is turned off, and at uninstall | `detect.sh` |
 | `/etc/passwd`, `/etc/shadow`, `/etc/ssh/sshd_config` | The admin account itself, and its `AllowUsers` entry if `sshd` has that list. `/etc` is the vendor's overlay on `/data` | `useradd` and `chpasswd`, run by `ui.sh` |
 | `/etc/systemd/system/sockets.target.wants/sshd.socket` | SSH at boot. The image has this link already; it is written again only if SSH had been turned off, for example by the vendor setup | `systemctl enable`, run by `ui.sh` |
-| `/systemrw/build.prop` | The vendor's saved properties. While the add-on runs, programs use a copy in RAM ([run-time files](#run-time-files)) | `storage.sh`, which writes the copy back when it has changed: every 10 minutes, and when it stops |
+| `/systemrw/build.prop` | The vendor's saved properties. While the add-on runs, programs use a copy in RAM ([run-time files](#run-time-files)). `camd.sh` sets one of them, `persist.qmmf.ubwcstream.enable`, for HDMI live view | `storage.sh`, which writes the copy back when it has changed: every 10 minutes, and when it stops |
 
 `ui.sh forget` deletes all of `/data/misc/vaidk`, and the admin account if the add-on created it,
 then restarts the ONVIF service so it forgets the presets it holds, and the object detector and the
@@ -404,11 +438,12 @@ flowchart TB
     cam --> streaming["Streaming"]
     cam --> onvif["vaidk-onvif<br/>applies the kept view"]
     cam -. "frames, when detecting" .-> det
+    cam -. "starts it for HDMI live view,<br/>stops it otherwise" .-> display["init_display: weston<br/>the vendor's display server"]
     classDef mod fill:#dae8fc,stroke:#6c8ebf,color:#1a1a1a
     classDef os fill:#fff2cc,stroke:#d6b656,color:#1a1a1a
     classDef use fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
     class init,join,done,rtsp,web,watch,recovery,storage,ram,cam,onvif,det,mqtt mod
-    class ap,rest,altek,svc,qmmf os
+    class ap,rest,altek,svc,qmmf,display os
     class power,saved,streaming use
 ```
 
@@ -423,6 +458,9 @@ flowchart TB
   ([storage upkeep](device/storage/README.md#the-properties-file)). The ONVIF service starts after
   the camera service, crash recovery runs once, as soon as `/data` is mounted, and the object
   detector, also after `/data`, waits for frames whenever the camera service starts.
+- **The vendor's display server** no longer starts at boot: a drop-in lets it start only while HDMI
+  live view is on, and the camera service starts it then
+  ([HDMI live view](device/camera/README.md#hdmi-live-view)).
 - **At shutdown** the boot script does nothing. The vendor's ran its whole boot sequence again.
   Storage upkeep stops before the file systems are unmounted: it saves the properties file if it
   changed, and gives the vendor its file back.
@@ -432,7 +470,7 @@ Where the add-on lives:
 | Location | File system | What |
 |---|---|---|
 | `/opt/vaidk` | The root, read-only (`mmcblk0p14`) | The add-on. It is on the root because `/data` is mounted `noexec`, so `vaidk-camd` couldn't run from there |
-| `/lib/systemd/system` | The root | The nine units, the boot script's drop-in in `InitCamx.service.d/`, and the time zone drop-in in `qmmf-server.service.d/` |
+| `/lib/systemd/system` | The root | The nine units, the boot script's drop-in in `InitCamx.service.d/`, the time zone drop-in in `qmmf-server.service.d/`, and the display server's drop-in in `init_display.service.d/` |
 | `/home/<admin>` | The root | The admin account's home directory, when the add-on created the account |
 | `/data/misc/vaidk` | `/data`, read-write | Your settings, Wi-Fi network, admin account record, the pan, tilt and zoom presets, and the object detector's model |
 | `/run/vaidk` | RAM | [Run-time files](#run-time-files) |
@@ -508,8 +546,8 @@ sequenceDiagram
   install leaves the previous one in place, to start again at the next restart. The installers then
   stop without restarting the camera.
 - **Uninstall** removes the add-on, its units and settings, puts back the vendor's object-detector
-  files, and re-enables the vendor preview server, so after the restart the camera runs its original
-  software and setup.
+  files, re-enables the vendor preview server, and starts the vendor's display server again, so after
+  the restart the camera runs its original software and setup.
 
 ## Network ports
 
@@ -543,6 +581,7 @@ camd/                        the camera programs' source; camd/README.md
   camd.cpp                   the camera program: camera, tracks, on-screen text, boxes, media socket, main loop
   image.cpp, image.h         picture settings and the digital zoom's crop
   talkback.cpp, talkback.h   talk-back: the talk socket, decoding, the speaker, microphone muting
+  liveview.cpp, liveview.h   HDMI live view: the main stream's frames on the vendor's display server
   detect.cpp                 the object detector: VAM, results, boxes, status
   detect_link.h              the messages between the two programs on detect.sock
   common.h                   helpers the source files share
@@ -555,7 +594,7 @@ device/                      everything copied to /opt/vaidk on the camera; devi
   common.sh                  paths and helpers the scripts share
   install-device.sh          installs, reinstalls or removes the add-on, on the camera
   boot/                      the boot script's builder and its systemd drop-in
-  camera/                    camd.sh, mic.sh, vaidk-camd (built from camd/) and the unit
+  camera/                    camd.sh, mic.sh, vaidk-camd (built from camd/), the unit, and the display server's drop-in and weston.ini
   rtsp/                      rtspd.py, net.sh and the unit
   onvif/                     onvifd.py, onvif.sh and the unit
   detect/                    detect.sh, objects.txt, vaidk-detect (built from camd/) and the unit

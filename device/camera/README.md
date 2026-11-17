@@ -3,8 +3,9 @@
 `vaidk-camera.service` runs the camera program, `vaidk-camd`, with the saved settings. The program
 drives the camera sensor, the video encoders, the microphone and the speaker through Qualcomm's
 camera service (`qmmf-server`), applies the picture settings, the digital pan, tilt and zoom, and the
-on-screen text, and hands the encoded streams to the [RTSP server](../rtsp/README.md). How the
-program itself works, and how to build it, is in [camd/README.md](../../camd/README.md).
+on-screen text, hands the encoded streams to the [RTSP server](../rtsp/README.md) and, with
+[HDMI live view](#hdmi-live-view) on, shows the main stream on the HDMI port. How the program itself
+works, and how to build it, is in [camd/README.md](../../camd/README.md).
 
 | File | What it is |
 |---|---|
@@ -12,22 +13,27 @@ program itself works, and how to build it, is in [camd/README.md](../../camd/REA
 | [mic.sh](mic.sh) | Sets the microphone gain once the camera is streaming |
 | `vaidk-camd` | The camera program, built from [camd/](../../camd/README.md) |
 | [vaidk-camera.service](vaidk-camera.service) | systemd unit: restarts the program 3 s after it exits |
+| [init_display-vaidk.conf](init_display-vaidk.conf) | Drop-in for the vendor's display server: it runs only while live view is on |
+| [weston.ini](weston.ini) | The display server's settings for live view: a black background |
 
 ## Start-up
 
 1. If `STOP_IPC_WEBSERVER=1`, stops the vendor preview server (`ipc-webserver`), which would compete
    for the camera.
-2. Waits for the vendor media server's audio calibration. About 5 s after `qmmf-webserver` starts, it
+2. Starts the vendor's display server (weston) with live view on, or stops it with live view off, and
+   sets whether the camera service keeps its frames compressed ([HDMI live view](#hdmi-live-view)).
+3. Waits for the vendor media server's audio calibration. About 5 s after `qmmf-webserver` starts, it
    runs a one-off audio calibration (`http_interface_gtest ... INIT_AUDIO_ACDB`) that holds the
    microphone, and a microphone track created meanwhile fails. `camd.sh` waits until
    `qmmf-webserver` has run for 20 s and the calibration has finished, for up to 40 s. The vendor
-   server stays otherwise idle: nothing else uses it.
-3. Writes the live settings file, `/run/vaidk/camd.conf`, and runs `vaidk-camd` with the other
-   settings as environment variables. It creates every track (main video with the microphone, then
-   the sub video), starts them, applies the picture settings and the view kept by the
-   [ONVIF service](../onvif/README.md) (`/run/vaidk/ptz.conf`), adds the on-screen text and, with
-   talk-back on, opens the talk-back socket.
-4. Once the streams are running, `vaidk-camd` runs `mic.sh`, which applies the microphone gain.
+   server stays otherwise idle: nothing else uses it. With live view on, it also waits for weston's
+   socket, for up to 20 s.
+4. Writes the live settings file, `/run/vaidk/camd.conf`, and runs `vaidk-camd` with the other
+   settings as environment variables. It creates every track (main video with the microphone, the sub
+   video, then the copies for object detection and live view), starts them, applies the picture
+   settings and the view kept by the [ONVIF service](../onvif/README.md) (`/run/vaidk/ptz.conf`), adds
+   the on-screen text and, with talk-back on, opens the talk-back socket.
+5. Once the streams are running, `vaidk-camd` runs `mic.sh`, which applies the microphone gain.
 
 The streams start about 30 s into boot. If the camera pipeline fails or any stream stops
 delivering frames for 10 s, `vaidk-camd` exits and systemd starts it again with a fresh camera
@@ -70,6 +76,7 @@ this service or, for the live settings, runs `camd.sh reload`.
 | `TALKBACK_MUTE_MIC` | `1`: mute the microphones while the speaker plays | Live |
 | `DETECT` | `1`: hand copies of the sub stream's frames to the [object detector](../detect/README.md) and draw its boxes on the main stream. Needs the sub stream on at 640x360 | Restart |
 | `DETECT_FPS`, `DETECT_BOXES` | Frames a second for the detector (at most the sub stream's frame rate); `0` hides the boxes | Live |
+| `HDMI` | `1`: show the main stream on the HDMI port ([HDMI live view](#hdmi-live-view)); `0` keeps the vendor's display server off | Restart |
 | `STOP_IPC_WEBSERVER` | Keep the vendor preview server stopped | Restart |
 
 Tested combinations:
@@ -80,6 +87,8 @@ Tested combinations:
 | 3840x2160 at 30 fps, 8 Mbps, H.264 or H.265 | 1280x720, 5 or 10 fps |
 
 With object detection on, the sub stream is 640x360; detection was tested with it at 5 and 10 fps.
+Live view was tested with the main stream at 1920x1080 and at 3840x2160, H.264 at 30 fps, with the
+on-screen text and detection boxes.
 
 The on-screen text was tested at 1080p and at 4K, and the streams kept their frame rates. At 1080p
 it made no measurable difference to `qmmf-server`'s CPU use, about 20% of the camera's two cores
@@ -104,6 +113,38 @@ Environment=TZ=EST5EDT,M3.2.0,M11.1.0
 When the value changes, it reloads systemd and restarts `qmmf-server`; `vaidk-camd` notices, exits
 and starts again. The installer writes the drop-in, and uninstalling removes it. The camera sets its
 clock with NTP (`chronyd`), so the time is only right once it has been online.
+
+## HDMI live view
+
+With `HDMI=1`, `vaidk-camd` shows the main stream full screen on a monitor plugged into the camera's
+HDMI port.
+
+- **Hardware.** The processor's display output (DSI) feeds a Lontium LT9611 bridge, which drives the
+  HDMI port. The bridge neither detects a monitor nor reads what it supports (EDID): it always sends
+  1920x1080 at 60 Hz.
+- **Display server.** The vendor's `init_display.service` starts weston 1.9, which drives that
+  output. The vendor kept it running all the time, an empty desktop that cost about 0.8 W. The
+  installer adds a drop-in, [init_display-vaidk.conf](init_display-vaidk.conf), that lets it start
+  only while `/run/vaidk/hdmi-on` exists and points weston at [weston.ini](weston.ini) (a black
+  background). At every start, `camd.sh` creates that file and starts weston when `HDMI=1`, or removes
+  it and stops weston, which turns the output off.
+- **Frames.** `vaidk-camd` creates a track that copies the main stream's frames, uncompressed, at its
+  size up to 1920x1080 (the camera scales a 4K stream down). It hands each frame to Qualcomm's display
+  client (`libqmmf_display_client`), which copies it into a buffer of its own and passes it to weston;
+  weston shows it on a display plane, scaled to the screen. The copies carry the main stream's
+  on-screen text and detection boxes: `qmmf-server` draws them before passing the frames on.
+- **Uncompressed frames.** `qmmf-server` keeps the streams' frames in the encoders' compressed format
+  (UBWC), which a copy can't read, unless the saved property `persist.qmmf.ubwcstream.enable` is `0`.
+  `camd.sh` sets it to `0` with live view on, and back to `1` without, before `vaidk-camd` starts;
+  `qmmf-server` reads it as it creates each stream. Uninstalling sets it back to `1`.
+- **Cost.** At 1080p, about 7% of one processor core for `vaidk-camd`'s copies and 13% for weston; the
+  power and the streams' frame rates didn't measurably change. With a 4K main stream, `qmmf-server`'s
+  scaling adds about half a core (136% of a core instead of 87%).
+- **If weston stops,** the display client's next frame aborts `vaidk-camd` (the camera's Wayland
+  library gives up on a broken connection); systemd starts it again 3 s later, and `camd.sh` starts
+  weston first. Live view was back 11 s after weston was killed.
+- **Shutdown.** `vaidk-camera.service` is ordered after `init_display.service`, so the camera stops
+  before the display server.
 
 ## The speaker
 
@@ -139,6 +180,7 @@ clock with NTP (`chronyd`), so the time is only right once it has been online.
 journalctl -u vaidk-camera --no-pager -n 30      # start-up, restarts, and stream totals every 10 min
 systemctl restart vaidk-camera                    # what "Restart streams" on the setup page does
 cat /run/vaidk/rtsp.status                        # what the RTSP server receives from the camera
+pidof weston; cat /tmp/weston.log                 # the display server, with live view on
 ```
 
 | Log line | Meaning |
@@ -154,6 +196,8 @@ cat /run/vaidk/rtsp.status                        # what the RTSP server receive
 | `no frames from the main stream for 10 s; restarting the camera` | A stall; systemd restarts it |
 | `connected to the object detector`, `lost the object detector` | The link to [vaidk-detect](../detect/README.md) came up or went; it tries again every second. Boxes hide while it is down |
 | `object detection needs the sub stream on at 640x360; streaming without it` | `DETECT=1`, but the sub stream is off or another size |
+| `live view: 1920x1080 on the display server (weston)` | Live view is on, at this size |
+| `live view: failed to connect to the display server (weston) (<code>)`, `streaming without live view` | weston didn't answer within 5 s; the streams run without live view. See `systemctl status init_display` and `/tmp/weston.log` |
 | `camera service event 1 (server died)` | `qmmf-server` restarted; this program restarts too |
 | `microphone unavailable; streaming without audio` | The microphone track couldn't be created |
 | `main stream 3840x2160@30 H.265 rejected (<code>)` | `qmmf-server` refused that track. Choose another setting |

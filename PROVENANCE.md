@@ -28,6 +28,7 @@ Every piece of the add-on is one of three kinds:
 - [Pan, tilt and zoom](#pan-tilt-and-zoom)
 - [Object detection](#object-detection)
 - [MQTT](#mqtt)
+- [HDMI output](#hdmi-output)
 - [How it was tested](#how-it-was-tested)
 - [Status lights](#status-lights)
 - [Restart after a crash](#restart-after-a-crash)
@@ -424,6 +425,70 @@ through an SSH tunnel to its own port 1883, with a person in view:
 Not tested: Home Assistant itself reading the announcements, as there was no broker on the network
 to test with; they follow Home Assistant's MQTT discovery format.
 
+## HDMI output
+
+**Files**: `camd/liveview.cpp`, `camd/liveview.h`, the live view track in `camd/camd.cpp`, and in
+`device/camera/` the HDMI step in `camd.sh`, `init_display-vaidk.conf` and `weston.ini`; the **HDMI
+output** section of `device/web/ui.sh`. Authored. The display server, Qualcomm's display client
+(`libqmmf_display_client.so`) and the HDMI bridge's driver are [from the device](#from-the-device).
+
+**On the stock camera**, the HDMI port showed the vision sample's picture, with its boxes, on a
+computer monitor ([Microsoft's hardware connections page](https://azure.github.io/Vision-AI-DevKit-Pages/docs/Hardware_connections/)):
+Qualcomm's media server fed the display a camera track of its own. Without the sample, the vendor's
+`init_display.service` still started the display server, weston, at every boot, and weston sent an
+empty desktop to the port 60 times a second, monitor or not.
+
+**In the way.**
+
+| Problem | Effect |
+|---|---|
+| The vision sample is an IoT Edge module, and IoT Edge doesn't start without IoT Hub | Nothing shows the camera's picture on the port |
+| The display chain runs all the time: weston, the processor's display output and the HDMI bridge | About 0.8 W, nearly a third of the camera's power, for an empty desktop |
+| `qmmf-server` is built without its display service for this chip (`DISABLE_DISPLAY`), and its player can't show video on this build | Neither can show a picture. Qualcomm's display client is built as a client of weston instead; its header, `qmmf_display.h` (BSD-3-Clause), was already among the vendored qmmf-sdk headers |
+| A camera track of its own sees only the middle 75% of the picture and doesn't follow the digital zoom ([object detection](#object-detection)) | The vendor's way to feed the display wouldn't match the main stream |
+| Copies of a stream larger than 640x360 are compressed (UBWC) | A copy of the main stream can't be shown as it comes |
+| The HDMI bridge, a Lontium LT9611, is wired as non-pluggable: no hot-plug detection and no EDID, and two fixed modes, 1920x1080 at 60 Hz and 3840x2160 at 30 Hz | The camera can't tell whether a monitor is attached, or what it supports |
+
+**What the add-on does.** With **HDMI output** on, `camd.sh` starts weston and has `qmmf-server` keep
+its frames uncompressed; `vaidk-camd` adds a copy of the main stream, at most 1920x1080, and queues
+each frame to weston through Qualcomm's display client. With it off, the default, weston stays stopped
+and the port is dark ([device/camera/README.md](device/camera/README.md#hdmi-live-view)).
+
+| Question | Options | Chosen |
+|---|---|---|
+| What to show | A status screen (the camera's name, address and stream links); the live picture; nothing | The live picture, or nothing (your choice) |
+| Which frames | A copy of the sub stream; a camera track of its own, as the vision sample had; a copy of the main stream with compression off | The main stream's copy: what the main stream shows, with its zoom, text and boxes, at its frame rate. The sub stream is 640x360 and 5 fps by default; a track of its own shows the middle 75% |
+| How the frames reach the monitor | Qualcomm's display client, through weston; a program of our own driving the display with weston stopped; weston taking the compressed frames without a copy | The display client: Qualcomm's own path on this camera. weston puts the frames on a display plane of their own, without the GPU |
+| A 4K main stream | No live view; scaled | Scaled to 1920x1080 by qmmf's own scaler, at about half a core more for `qmmf-server` |
+| Keeping weston off | Its property (`persist.display.launch.weston.at.bootup`); a service that stops it after boot; a drop-in on the vendor's `init_display.service` | The drop-in: weston starts only while `/run/vaidk/hdmi-on` exists, which `camd.sh` creates for live view. The vendor's unit and its property stay as they were, and the **HDMI output** setting is the one place that decides |
+| Default | On; off | Off (your choice): it saves about 0.8 W, and the camera can't tell whether a monitor is attached |
+| When weston stops | Reconnect; restart | Restart: the camera's Wayland library ends the program when weston goes away, so systemd starts the camera service again, and `camd.sh` starts weston first |
+
+Tested on the camera with a 1080p computer monitor, you watching it, while streaming to Frigate:
+
+| Test | Result |
+|---|---|
+| weston as the vendor left it, then stopped | The vendor's desktop (a floral picture) on the monitor. Stopped: the output off (DPMS Off, no planes); the streams didn't notice |
+| The camera's input current from USB, at about 5.1 V, weston running and stopped | 574 and 533 mA running; 384 and 401 mA stopped: about 0.8 W |
+| Copies of the sub and the main stream, saved and checked on the PC | The sub stream's: plain. The main stream's: compressed noise; plain with `persist.qmmf.ubwcstream.enable=0` (neighbouring rows correlate 0.97, against 0.00 compressed) |
+| Live view at 1080p, with the date and time and detection on | The picture full screen, with the text and a person's box, on a display plane of its own. `vaidk-camd` +7% and weston +13% of a core; the camera's power and the main stream's frame rate unchanged within the noise |
+| A 4K main stream | Scaled to the monitor. `qmmf-server` 136% of a core, against 87% without live view |
+| A 720p main stream, checked from the display's state rather than on the monitor | Live view at 1280x720. The display client's buffers are padded as qmmf pads its frames (NV12, 1280x736), so the copied frames line up |
+| weston killed | `vaidk-camd` stopped too; live view was back 11 s later |
+| On and off from the setup page | On: live view, without the vendor's desktop showing first. Off: weston stopped, compression back on, the monitor without signal |
+| A restart with live view on, then off | On: live view came back by itself. Off: weston never started |
+
+**Found along the way.**
+- **The on-screen clock flickers now and then,** on the monitor and in the RTSP stream alike (6
+  single-frame dips in 16 s): `qmmf-server` redraws the text every second. It isn't live view's
+  doing.
+- **Reading `/sys/kernel/debug/gpio` froze the whole camera:** no lights, network or ADB, and crash
+  recovery couldn't act. Holding the power button for 12 to 15 s turned it off, and it started
+  normally. Nothing in the add-on reads that file.
+
+Not tested: televisions, which Microsoft says may not recognise the camera, and the bridge's 4K mode,
+which weston doesn't choose.
+
 ## How it was tested
 
 On the camera described in [ASSESSMENT.md](ASSESSMENT.md), on its Wi-Fi network, with `ffprobe` and
@@ -702,8 +767,9 @@ The camera's own software. None of it is committed to this repository.
 | Item | Where it goes | Why |
 |---|---|---|
 | The vendor boot script, `/vendor/etc/camera/InitCamx` | Read on the camera by `make-initcamx.py`; the result, `InitCamx.vaidk`, stays on the camera | The vendor's boot sequence, without the IoT Hub step |
-| `libqmmf_recorder_client.so`, `libqmmf_player_client.so`, `libcamera_client.so.0`, `libcamera_metadata.so.0` | Copied by `build.ps1` to the build cache on your PC (`%LOCALAPPDATA%\vaidk-build`), only to link against | `vaidk-camd` calls `qmmf-server`'s recorder and player, and reads and writes the camera's request settings, through them |
+| `libqmmf_recorder_client.so`, `libqmmf_player_client.so`, `libqmmf_display_client.so`, `libcamera_client.so.0`, `libcamera_metadata.so.0` | Copied by `build.ps1` to the build cache on your PC (`%LOCALAPPDATA%\vaidk-build`), only to link against | `vaidk-camd` calls `qmmf-server`'s recorder and player, reads and writes the camera's request settings, and shows HDMI live view, through them |
 | `qmmf-server`, the camera and audio HALs, the sensor driver, the DSP firmware | Used in place | The camera, the encoders, the microphones and the speaker |
+| weston and the vendor's `init_display.service`, the HDMI bridge's driver | Used in place; weston only while HDMI live view is on | The HDMI output |
 | `libvam_interface.so.0`, `libav_queue.so.0`, the video analytics manager (`libVAManager.so`), its ML engine (`/usr/lib/vam_engines/libEngine_ML.so.0`) and SNPE (`libSNPE.so`, `libsnpe_dsp_*_skel.so`) | Loaded in place by `vaidk-detect` | The object detector |
 | The vision sample's model and labels (`mobilenet-SSD.dlc`, `coco_labels.txt`), in its Docker image or in `/etc/Preload_container/visionsamplemodule.tar` | Copied on the camera to `/data/misc/vaidk/models/builtin` and checked against their SHA-256; they never leave it | The object detector's model |
 | `altekflow`, `wifimonitor` | Used in place | The lights, the power button, the battery protection |
@@ -725,9 +791,10 @@ Each is fetched at a version pinned in one place, named in the third column.
 ### Authored
 
 Everything else: `install.ps1`, `install.sh`, `device/` (scripts, units, the setup page, the light
-stand-in, `defaults.conf`, `detect/objects.txt`, the MQTT client, and `vaidk-camd` and `vaidk-detect`
-as built from `camd/`), the sources in `camd/` (`camd.cpp`, `image.cpp`, `talkback.cpp`, `detect.cpp`,
-their headers, `detect_link.h` and `common.h`), `camd/build.ps1`, `camd/android/`, and the documents.
+stand-in, `defaults.conf`, `detect/objects.txt`, the MQTT client, the display server's drop-in and
+`weston.ini`, and `vaidk-camd` and `vaidk-detect` as built from `camd/`), the sources in `camd/`
+(`camd.cpp`, `image.cpp`, `talkback.cpp`, `liveview.cpp`, `detect.cpp`, their headers,
+`detect_link.h` and `common.h`), `camd/build.ps1`, `camd/android/`, and the documents.
 `camd/android/camera/CameraMetadata.h` declares only what `vaidk-camd` calls, with the names and
 layouts the camera libraries' exported symbols and Android 7's published API require; it was written
 for this project rather than copied from Android's sources. `detect/objects.txt` lists the objects in
@@ -745,7 +812,7 @@ files, and recordings, out of the repository even if they are copied into its fo
 | The add-on: its scripts, the setup page, the sources in `camd/`, `build.ps1`, `android/`, the documents | MIT ([LICENSE](LICENSE)) | Yes |
 | `camd/third_party/qmmf-sdk/`, `camd/third_party/qmmf-webserver/` | BSD-3-Clause, © The Linux Foundation. Keep each `NOTICE` with it | Yes, with the `NOTICE` |
 | `device/camera/vaidk-camd`, `device/detect/vaidk-detect` | Built from `camd/`, including the qmmf headers. GCC's runtime parts are covered by the GCC Runtime Library Exception | Yes, with the qmmf `NOTICE` files |
-| The four camera libraries in your build cache | The camera's binaries; no licence published | **Keep local.** Never commit them |
+| The five camera libraries in your build cache | The camera's binaries; no licence published | **Keep local.** Never commit them |
 | The vision sample's model and labels | Shipped by Microsoft inside the sample's image; no licence for them was found | **Keep on the camera.** The add-on copies them only there |
 | The vendor boot script, and `InitCamx.vaidk` built from it | No licence | **Keep on the camera.** This repository carries only the edits |
 | The Linaro toolchain | GPL-3.0 and others | Not committed: `build.ps1` downloads it from Arm |

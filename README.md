@@ -16,11 +16,14 @@ account, IoT Hub or SSH is needed: you install it over USB and finish setup from
 - **Object detection on the camera (optional):** the detector the camera shipped with runs on its
   DSP and draws labelled boxes (`person 87%`) on the main stream; the setup page shows what is in
   view, and MQTT can publish it, with Home Assistant sensors if you want them.
+- **HDMI live view (optional):** plug a computer monitor into the camera's HDMI port to watch the
+  main stream, boxes and all. Off by default, which also saves the 0.8 W the vendor's display
+  software used to draw.
 - **Picture and on-screen text:** anti-flicker, exposure, white balance, colour and sharpness
   change on the fly; the date, time and camera name can be burned into the video.
 - **Setup page:** first-time setup happens on the camera's own Wi-Fi network. Afterwards, open
   `http://<camera-ip>/` to change the streams, audio, picture, on-screen text, talk-back, pan, tilt
-  and zoom presets, object detection, MQTT, Wi-Fi network, camera name or admin account.
+  and zoom presets, object detection, MQTT, HDMI output, Wi-Fi network, camera name or admin account.
 - **Recovers by itself:** if a stream stalls, the camera restarts its camera pipeline while players
   stay connected; if the camera crashes, it restarts; and if it can't reach its Wi-Fi network for 5
   minutes, it opens its setup network so you can pick another one.
@@ -346,12 +349,31 @@ steady background noise, so a quiet room sounds nearly silent and voices come th
 - **Privacy:** recording sound is regulated in many places, often more strictly than video. Let
   people know the camera records audio, and turn it off where you don't need it.
 
+## HDMI output
+
+The camera has a full-size HDMI port. The setup page's **HDMI output** section turns on **live view**:
+the main stream, full screen, on a monitor plugged into that port, with its on-screen text and, while
+object detection draws them, its boxes.
+
+- **Monitor:** the camera always sends 1920x1080 at 60 Hz, and can't tell whether a monitor is plugged
+  in or what it supports. Use a computer monitor and a plain HDMI cable, without adapters, switches or
+  extenders; a TV may not show it.
+- **Picture:** what the main stream shows, zoom included; the camera scales a 4K main stream down to
+  1920x1080.
+- **Cost:** about a fifth of one processor core, and about half a core more with a 4K main stream.
+  Turning it on or off restarts the streams.
+- **Off (default):** the camera's display output stays off, monitor or not. That saves about 0.8 W,
+  nearly a third of the camera's power: the vendor's software kept it running all the time.
+- The monitor only shows the video: everything is set on the setup page.
+
+How it works: [device/camera/README.md](device/camera/README.md#hdmi-live-view).
+
 ## Change settings
 
 Open `http://<camera-ip>/` and sign in with the admin account. The page shows the camera's status
-(Wi-Fi, address, stream health, microphone, talk-back, pan, tilt and zoom, object detection, MQTT) and
-its health (processor, memory, storage, flash, temperatures, battery and power, Wi-Fi link, stream
-viewers and crashes; [details](device/web/README.md#the-system-section)), and lets you:
+(Wi-Fi, address, stream health, microphone, talk-back, pan, tilt and zoom, object detection, MQTT,
+HDMI output) and its health (processor, memory, storage, flash, temperatures, battery and power, Wi-Fi
+link, stream viewers and crashes; [details](device/web/README.md#the-system-section)), and lets you:
 
 - change the main and sub stream resolution, frame rate, bitrate and codec;
 - turn the microphone on or off and set its gain;
@@ -360,6 +382,7 @@ viewers and crashes; [details](device/web/README.md#the-system-section)), and le
 - turn pan, tilt and zoom on or off, show the whole picture, and save, use or delete presets;
 - turn object detection on or off, and choose what it reports and how;
 - publish detections to an MQTT broker;
+- turn HDMI live view on or off;
 - move the camera to another Wi-Fi network;
 - rename the camera and change the admin account;
 - restart the streams or the camera, or reset it.
@@ -452,6 +475,10 @@ computer with `ssh-keygen -R <camera-ip>`.
 - **MQTT doesn't connect:** the setup page's **MQTT** section shows the broker's answer, such as a
   wrong user name or password. Check that object detection is on, and that the broker accepts
   connections from the camera's address on its port (1883 by default).
+- **Nothing on the monitor:** check that the setup page's status shows **HDMI output** as live view,
+  and connect a computer monitor straight to the camera with a plain HDMI cable; adapters, switches
+  and some TVs don't show the camera's fixed 1080p signal. `journalctl -u vaidk-camera` shows
+  `live view:` when it starts.
 
 ## Security notes
 
@@ -472,8 +499,9 @@ computer with `ssh-keygen -R <camera-ip>`.
 ## How it works
 
 The add-on keeps the camera's own firmware and its Qualcomm camera service, `qmmf-server`, and
-replaces everything above it. A small native program, `vaidk-camd`, runs the camera, the microphone
-and the speaker; a second, `vaidk-detect`, runs the camera's own object detector on the DSP; a Python
+replaces everything above it. A small native program, `vaidk-camd`, runs the camera, the microphone,
+the speaker and HDMI live view; a second, `vaidk-detect`, runs the camera's own object detector on the
+DSP; a Python
 RTSP server serves the streams and the talk-back channel; a Python ONVIF service moves the digital
 view; a Python MQTT client publishes detections; shell scripts run Wi-Fi, the setup page, crash
 recovery, storage upkeep and the boot sequence, without the retired IoT Hub step. Nothing needs Azure

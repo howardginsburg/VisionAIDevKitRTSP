@@ -7,7 +7,7 @@ Everything in this folder is copied to `/opt/vaidk` on the camera by the install
 | Component | Folder | What it does | Runs as |
 |---|---|---|---|
 | [Boot script](boot/README.md) | `boot/` | Boots the camera without the vendor's IoT Hub setup: joins the saved Wi-Fi network or opens the setup network | `InitCamx.service`, through a drop-in |
-| [Camera](camera/README.md) | `camera/` | Runs `vaidk-camd`, which drives the camera, microphone and speaker and hands the encoded streams to the RTSP server | `vaidk-camera.service` |
+| [Camera](camera/README.md) | `camera/` | Runs `vaidk-camd`, which drives the camera, microphone and speaker and hands the encoded streams to the RTSP server; with HDMI live view on, it also shows the main stream on a monitor. Starts and stops the vendor's display server to match | `vaidk-camera.service` |
 | [RTSP server](rtsp/README.md) | `rtsp/` | Serves the main stream (with audio and the talk-back channel) on port 8900 and the sub stream on port 8901 | `vaidk-rtsp.service` |
 | [Pan, tilt and zoom](onvif/README.md) | `onvif/` | The ONVIF service on port 8080: Frigate and Home Assistant find the streams and move the digital view through it | `vaidk-onvif.service` |
 | [Object detection](detect/README.md) | `detect/` | Runs the camera's own object detector on its DSP, on frames from the camera program, which draws its boxes on the main stream. Off by default | `vaidk-detect.service` |
@@ -61,9 +61,10 @@ then `adb reboot`. (The installers also make sure the text files have Unix line 
 4. **Checks** every shell script with `sh -n`, the boot script with `bash -n`, the RTSP, ONVIF and MQTT
    services with Python's compiler, and that `camera/vaidk-camd` and `detect/vaidk-detect` are still
    ARM executables. Only then does it replace `/opt/vaidk`.
-5. **Installs** each component's unit in `/lib/systemd/system` (enabled for `multi-user.target`) and
-   the boot drop-in `/lib/systemd/system/InitCamx.service.d/vaidk.conf`, then remounts the root
-   read-only.
+5. **Installs** each component's unit in `/lib/systemd/system` (enabled for `multi-user.target`), the
+   boot drop-in `/lib/systemd/system/InitCamx.service.d/vaidk.conf` and the display server's drop-in
+   `/lib/systemd/system/init_display.service.d/vaidk.conf`
+   ([HDMI live view](camera/README.md#hdmi-live-view)), then remounts the root read-only.
 6. Without `--keep-settings`, **forgets** the saved Wi-Fi network, settings, presets and admin
    account, so the camera starts in setup mode.
 7. **Sets the on-screen clock's time zone** in `qmmf-server`'s drop-in,
@@ -72,5 +73,7 @@ then `adb reboot`. (The installers also make sure the text files have Unix line 
 
 **Uninstall** stops the services, puts back the vendor's object-detector files
 ([detect/README.md](detect/README.md#how-it-starts)), forgets the settings and the admin account (if
-the add-on created it), and removes `/opt/vaidk`, the units and both drop-ins. The vendor preview
-server is enabled again, so after a restart the camera runs its original software and setup.
+the add-on created it), and removes `/opt/vaidk`, the units and the three drop-ins. The vendor preview
+server is enabled again, the vendor's display server is started again, and the property
+`persist.qmmf.ubwcstream.enable` goes back to `1`, so after a restart the camera runs its original
+software and setup.

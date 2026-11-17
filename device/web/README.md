@@ -43,7 +43,7 @@ camera's new address, then the camera restarts.
 
 | Section | What it shows or changes |
 |---|---|
-| Status | Wi-Fi network and signal, address, stream health, the stream URLs, microphone, talk-back, pan, tilt and zoom, object detection, MQTT |
+| Status | Wi-Fi network and signal, address, stream health, the stream URLs, microphone, talk-back, pan, tilt and zoom, object detection, MQTT, HDMI output |
 | System | The camera's health, measured as the page loads ([what each line shows](#the-system-section)). **Refresh** measures again |
 | Camera streams | Main: resolution, frame rate, bitrate, codec. Sub: on or off, resolution, frame rate, bitrate; while object detection is on, the sub stream stays on at 640x360 and only its frame rate and bitrate can change. Microphone: on or off, gain. Saving restarts the camera service |
 | Picture | Light flicker, exposure, white balance, colour and sharpness. Saving applies them at once (`camd.sh reload`) |
@@ -52,6 +52,7 @@ camera's new address, then the camera restarts.
 | Pan, tilt and zoom | The [ONVIF service](../onvif/README.md) on or off (saving restarts it), the current zoom, **Show the whole picture**, and the presets: go to, delete, or save the current view under a name. It asks the service over its local address ([the setup page](../onvif/README.md#the-setup-page)) |
 | Object detection | While it is on, what the [detector](../detect/README.md) is doing: running (analyses a second and the time each takes), starting, or why it stopped; what is in view; when each object was last seen; the latest detections, in the on-screen clock's time zone; the model and SNPE version. Then: on or off, the objects to report (the defaults, and **More objects** with the rest of the 80), the lowest confidence, analyses a second, and boxes on the main stream. Turning it on sets the sub stream to 640x360 if it wasn't, and says so; turning it on or off restarts the camera service and the detector; objects and confidence restart only the detector; the rate and the boxes apply at once (`camd.sh reload`) |
 | MQTT | While it is on, the [MQTT service](../mqtt/README.md)'s state: connected and messages sent, connecting, the broker's answer when it refuses (such as a wrong password), or waiting for object detection. Then: on or off, the broker and port, user name and password (blank keeps the saved one; kept apart from the settings, readable only by root), the topic prefix, and Home Assistant discovery. Saving restarts the service |
+| HDMI output | Off, or live view of the main stream on a monitor plugged into the camera ([HDMI live view](../camera/README.md#hdmi-live-view)). Changing it restarts the camera service, which starts or stops the vendor's display server |
 | Wi-Fi | Join another network |
 | Camera name and admin account | The name (page title, Frigate name, on-screen name, DHCP host name), the admin user and password |
 | Frigate | Frigate configuration built from the current settings: go2rtc streams (with a separate two-way stream when talk-back is on) and the camera entry, with its `onvif` part when pan, tilt and zoom is on |

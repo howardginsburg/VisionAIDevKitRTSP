@@ -7,7 +7,8 @@
 //
 // With DETECT=1 it also hands copies of the sub stream's frames to the object detector (vaidk-detect)
 // over CAMD_DETECT, at most DETECT_FPS a second, and draws the boxes the detector sends back on the
-// main stream (detect_link.h).
+// main stream (detect_link.h). With HDMI=1 it shows a copy of the main stream on the HDMI output
+// (liveview.h).
 //
 // In the other direction it plays talk-back audio from the RTSP server's backchannel on the speaker
 // (talkback.cpp). Settings come from environment variables (see device/camera/camd.sh); the ones
@@ -46,6 +47,7 @@
 #include "common.h"
 #include "detect_link.h"
 #include "image.h"
+#include "liveview.h"
 #include "talkback.h"
 
 using namespace qmmf;
@@ -54,11 +56,11 @@ using namespace qmmf::recorder;
 namespace {
 
 const uint32_t kMagic = 0x4b494156;  // "VAIK"
-enum : uint8_t { kInfo = 0, kMain = 1, kSub = 2, kAudio = 3, kDetect = 4, kStreams = 5 };
+enum : uint8_t { kInfo = 0, kMain = 1, kSub = 2, kAudio = 3, kDetect = 4, kDisplay = 5, kStreams = 6 };
 enum : uint8_t { kKeyframe = 1, kCodecConfig = 2 };
 const uint32_t kCameraId = 0;
-const uint32_t kTrackIds[kStreams] = {0, 1, 2, 101, 3};
-const char *const kNames[kStreams] = {"info", "main", "sub", "audio", "detect"};
+const uint32_t kTrackIds[kStreams] = {0, 1, 2, 101, 3, 4};
+const char *const kNames[kStreams] = {"info", "main", "sub", "audio", "detect", "live view"};
 const size_t kQueueLimit = 16u << 20;  // drop frames when the RTSP server falls this far behind
 const uint64_t kStallUs = 10000000;    // restart when an enabled stream stops for this long
 const uint32_t kMaxOverlays = 10;      // qmmf-server draws at most this many on a track (a fixed array, unchecked)
@@ -130,6 +132,17 @@ Config load_config() {
   // at the sub stream's rate; DETECT_FPS (a live setting) decides how many go to the detector.
   c.video[kDetect] = {env_u32("DETECT", 0) == 1, false, kDetectWidth, kDetectHeight, c.video[kSub].fps, 0};
   c.detect_path = env_str("CAMD_DETECT", "/run/vaidk/detect.sock");
+  // HDMI live view (HDMI=1): copies of the main stream's frames, with its text and boxes, at its size up
+  // to 1920x1080 (the camera scales a larger stream down).
+  VideoConfig &live = c.video[kDisplay];
+  live = c.video[kMain];
+  if (live.width > 1920 || live.height > 1080) {
+    live.width = 1920;
+    live.height = 1080;
+  }
+  live.enabled = env_u32("HDMI", 0) == 1;
+  live.hevc = false;
+  live.bitrate = 0;
   c.audio = env_u32("AUDIO_ENABLED", 1) == 1;
   c.audio_rate = env_u32("AUDIO_RATE", 48000);
   c.audio_channels = env_u32("AUDIO_CHANNELS", 1);
@@ -590,6 +603,7 @@ class Camera {
         }
       }
     }
+    if (cfg_.video[kDisplay].enabled && !start_live_view()) return false;
     for (uint32_t session : sessions_) {
       ret = recorder_.StartSession(session);
       if (ret != 0) return failed("start a session", ret);
@@ -692,6 +706,7 @@ class Camera {
     video_tracks_.clear();
     for (uint32_t session : sessions_) recorder_.DeleteSession(session);
     sessions_.clear();
+    live_.close();
     if (camera_started_) recorder_.StopCamera(kCameraId);
     camera_started_ = false;
     if (connected_) recorder_.Disconnect();
@@ -769,13 +784,15 @@ class Camera {
   bool create_video(uint32_t session, uint8_t stream) {
     const VideoConfig &v = cfg_.video[stream];
     status_t ret;
-    if (stream == kDetect) {
-      // A copy of the sub stream's frames, which shows exactly what the main stream does, zoomed or not.
-      // (A YUV stream of its own sees only the middle 75% of the picture and doesn't follow the zoom.)
+    if (stream == kDetect || stream == kDisplay) {
+      // A copy of another stream's frames. The detector's are the sub stream's, which shows exactly what
+      // the main stream does, zoomed or not (a YUV stream of its own sees only the middle 75% of the
+      // picture and doesn't follow the zoom). Live view's are the main stream's, drawn on already: qmmf
+      // adds a stream's text and boxes before handing its frames to the copies.
       VideoTrackCreateParam p(kCameraId, VideoFormat::kYUV, v.width, v.height, float(v.fps));
       VideoExtraParam extra;
       SourceVideoTrack source;
-      source.source_track_id = int32_t(kTrackIds[kSub]);
+      source.source_track_id = int32_t(kTrackIds[stream == kDetect ? kSub : kMain]);
       extra.Update(QMMF_SOURCE_VIDEO_TRACK_ID, source);
       ret = recorder_.CreateVideoTrack(session, kTrackIds[stream], p, extra, track_cb(stream, session));
     } else {
@@ -796,11 +813,30 @@ class Camera {
     }
     if (ret != 0) {
       note("%s stream %ux%u@%u %s rejected (%d)", kNames[stream], v.width, v.height, v.fps,
-           stream == kDetect ? "NV12" : v.hevc ? "H.265" : "H.264", int(ret));
+           stream == kDetect || stream == kDisplay ? "NV12" : v.hevc ? "H.265" : "H.264", int(ret));
       return false;
     }
     video_tracks_.push_back({session, kTrackIds[stream]});
     active_[stream] = true;
+    return true;
+  }
+
+  // HDMI live view: frames shown full screen by the display server, weston. Without it, or if the track
+  // is refused, the streams run without live view. False only when the camera service fails.
+  bool start_live_view() {
+    const VideoConfig &v = cfg_.video[kDisplay];
+    if (!live_.open(v.width, v.height, v.fps)) {
+      note("streaming without live view");
+      return true;
+    }
+    uint32_t session = 0;
+    if (!create_session(&session)) return false;
+    if (!create_video(session, kDisplay)) {
+      note("streaming without live view");
+      recorder_.DeleteSession(session);
+      sessions_.pop_back();
+      live_.close();
+    }
     return true;
   }
 
@@ -902,6 +938,8 @@ class Camera {
       const BufferDescriptor &b = buffers[i];
       if (stream == kDetect) {
         link_.offer(b, i < meta.size() ? &meta[i] : nullptr, cfg_.video[kDetect].width, cfg_.video[kDetect].height);
+      } else if (stream == kDisplay) {
+        live_.show(b);
       } else {
         uint8_t flags = 0;
         if (b.flag & static_cast<uint32_t>(BufferFlags::kFlagIDRFrame)) flags |= kKeyframe;
@@ -1019,11 +1057,12 @@ class Camera {
   DetectLink &link_;
   Recorder recorder_;
   ImageControl image_;
+  LiveView live_;
   bool connected_ = false, camera_started_ = false;
   std::vector<uint32_t> sessions_, started_;
   std::vector<std::pair<uint32_t, uint32_t>> video_tracks_, audio_tracks_, overlays_;
   std::mutex stats_lock_;
-  bool active_[kStreams] = {false, false, false, false, false};
+  bool active_[kStreams] = {};
   uint64_t frames_[kStreams] = {}, bytes_[kStreams] = {}, last_us_[kStreams] = {};
   uint32_t debug_left_[kStreams] = {};
   uint64_t started_us_ = 0;

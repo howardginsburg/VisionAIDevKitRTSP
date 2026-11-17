@@ -74,6 +74,10 @@ install_addon() {
     mkdir -p "$UNIT_DIR/InitCamx.service.d"
     cp "$VAIDK_DIR/boot/InitCamx-vaidk.conf" "$UNIT_DIR/InitCamx.service.d/vaidk.conf"
     chmod 644 "$UNIT_DIR/InitCamx.service.d/vaidk.conf"
+    # The vendor's display server runs only while HDMI live view is on (camera/camd.sh).
+    mkdir -p "$UNIT_DIR/init_display.service.d"
+    cp "$VAIDK_DIR/camera/init_display-vaidk.conf" "$UNIT_DIR/init_display.service.d/vaidk.conf"
+    chmod 644 "$UNIT_DIR/init_display.service.d/vaidk.conf"
     root_ro
 
     if [ $keep = 0 ]; then sh "$VAIDK_DIR/web/ui.sh" forget; fi
@@ -103,12 +107,17 @@ uninstall_addon() {
         name=${unit##*/}
         rm -f "$UNIT_DIR/$name" "$UNIT_DIR/multi-user.target.wants/$name"
     done
-    rm -f "$UNIT_DIR/InitCamx.service.d/vaidk.conf" "$UNIT_DIR/qmmf-server.service.d/vaidk.conf"
-    rmdir "$UNIT_DIR/InitCamx.service.d" "$UNIT_DIR/qmmf-server.service.d" 2>/dev/null || true
+    rm -f "$UNIT_DIR/InitCamx.service.d/vaidk.conf" "$UNIT_DIR/qmmf-server.service.d/vaidk.conf" \
+        "$UNIT_DIR/init_display.service.d/vaidk.conf"
+    rmdir "$UNIT_DIR/InitCamx.service.d" "$UNIT_DIR/qmmf-server.service.d" "$UNIT_DIR/init_display.service.d" 2>/dev/null || true
     rm -rf "$VAIDK_DIR"
     root_ro
     systemctl daemon-reload
     systemctl enable ipc-webserver.service >/dev/null 2>&1 || true
+    # HDMI live view turns the streams' frame compression off and the vendor's display server off or on;
+    # put both back as the vendor had them.
+    if [ "$(getprop persist.qmmf.ubwcstream.enable)" = 0 ]; then setprop persist.qmmf.ubwcstream.enable 1; fi
+    systemctl start init_display.service >/dev/null 2>&1 || true
     log "Removed the add-on. After the restart, the camera runs its original setup."
     log "VAIDK-OK"
 }

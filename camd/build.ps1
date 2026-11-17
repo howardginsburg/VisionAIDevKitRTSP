@@ -4,16 +4,17 @@
 
 .DESCRIPTION
   Cross-compiles for the camera's 32-bit ARM Linux:
-  - camd.cpp, image.cpp and talkback.cpp into device/camera/vaidk-camd (the streams);
+  - camd.cpp, image.cpp, talkback.cpp and liveview.cpp into device/camera/vaidk-camd (the streams, and
+    HDMI live view);
   - detect.cpp into device/detect/vaidk-detect (object detection; it loads the camera's own video
     analytics libraries at run time, so it links nothing from the camera).
   - Compiler: Linaro GCC 6.5 (matches the camera's C++ runtime, libstdc++ 6.0.22). Downloaded
     once from Arm's legacy Linaro toolchain archive and checked against its published MD5.
   - Qualcomm qmmf-sdk and qmmf-webserver headers: vendored in third_party/ (BSD-3-Clause, see each
     NOTICE).
-  - The camera's own libraries (Qualcomm's qmmf clients and Android's camera metadata), needed
-    only to link vaidk-camd. They aren't stored in the repository; the script copies them from a
-    camera connected over USB (adb).
+  - The camera's own libraries (Qualcomm's qmmf clients, its display client and Android's camera
+    metadata), needed only to link vaidk-camd. They aren't stored in the repository; the script
+    copies them from a camera connected over USB (adb).
 
 .PARAMETER CacheDir
   Where the toolchain and the camera's libraries are kept between builds.
@@ -51,7 +52,8 @@ if (-not (Test-Path $gxx)) {
 }
 
 $libDir = Join-Path $CacheDir 'device-libs'
-$cameraLibs = @('libqmmf_recorder_client.so', 'libqmmf_player_client.so', 'libcamera_client.so.0', 'libcamera_metadata.so.0')
+$cameraLibs = @('libqmmf_recorder_client.so', 'libqmmf_player_client.so', 'libqmmf_display_client.so',
+    'libcamera_client.so.0', 'libcamera_metadata.so.0')
 $missing = @($cameraLibs | Where-Object { -not (Test-Path (Join-Path $libDir $_)) })
 if ($missing.Count -gt 0) {
     if (-not (Get-Command adb -ErrorAction SilentlyContinue)) {
@@ -79,6 +81,7 @@ $flags = $common + @(
     (Join-Path $PSScriptRoot 'camd.cpp'),
     (Join-Path $PSScriptRoot 'image.cpp'),
     (Join-Path $PSScriptRoot 'talkback.cpp'),
+    (Join-Path $PSScriptRoot 'liveview.cpp'),
     '-o', $Output,
     "-L$libDir"
 )

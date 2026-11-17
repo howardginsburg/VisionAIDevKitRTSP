@@ -224,6 +224,7 @@ show_message() {
         detect-sub) text="Saved. Object detection works from the sub stream at 640x360, so it is set to that now: update the detect size in Frigate (see the Frigate section). The streams restart in about 15 seconds." ;;
         mqtt) text="Saved. The MQTT service connects with the new settings in a few seconds." ;;
         mqtt-saved) text="Saved." ;;
+        hdmi) text="Saved." ;;
         err-token) err="The page expired. Please try again." ;;
         err-ssid) err="Choose or type a Wi-Fi network name." ;;
         err-wifi-pass) err="Wi-Fi passwords have 8 to 63 characters. Leave it empty only for an open network." ;;
@@ -497,6 +498,19 @@ post_mqtt() {
     redirect "$SELF?msg=mqtt-saved"
 }
 
+# HDMI output: live view is a stream of the camera's own, so turning it on or off restarts the streams;
+# camera/camd.sh then starts or stops the vendor's display server (weston).
+post_hdmi() {
+    hdmi=$(field hdmi)
+    allowed "$hdmi" "$HDMI" "0 1" || fail err-camera
+    set_setting HDMI "$hdmi"
+    if [ "$hdmi" != "$HDMI" ]; then
+        restart_streams
+        redirect "$SELF?msg=camera"
+    fi
+    redirect "$SELF?msg=hdmi"
+}
+
 handle_post() {
     read_form
     [ "$(field t)" = "$(token)" ] || fail err-token
@@ -512,6 +526,7 @@ handle_post() {
         ptz) post_ptz ;;
         detect) post_detect ;;
         mqtt) post_mqtt ;;
+        hdmi) post_hdmi ;;
         device) post_device ;;
         restart-streams) restart_streams; redirect "$SELF?msg=restart" ;;
         reboot)
@@ -598,6 +613,7 @@ status_section() {
     if [ "$DETECT" = 1 ] && [ "$(detect_value status)" = running ]; then item "Object detection" "On, in view: $(in_view)"
     else item "Object detection" "$(detect_status)"; fi
     item "MQTT" "$(mqtt_status)"
+    item "HDMI output" "$(hdmi_status)"
     printf '</dl></section>'
 }
 
@@ -1101,6 +1117,24 @@ mqtt_section() {
     printf '<button>Save</button></form></section>'
 }
 
+# ----- HDMI section -----
+
+hdmi_status() { # one line: what the HDMI output shows
+    if [ "$HDMI" != 1 ]; then echo "Off"
+    elif pidof weston >/dev/null; then echo "Live view of the main stream"
+    else echo "Live view, starting"; fi
+}
+
+hdmi_section() {
+    printf '<section id="hdmi"><h2>HDMI output</h2>'
+    form_start hdmi
+    printf '<label>HDMI output <select name="hdmi">'
+    options "$HDMI" 0 "Off" 1 "Live view of the main stream"
+    printf '</select></label>'
+    printf '<p class="hint">Live view shows the main stream on a monitor plugged into the camera'"'"'s HDMI port, with its on-screen text and, while object detection draws them, its boxes. The camera always sends 1920x1080 at 60 Hz without asking the monitor what it supports: use a computer monitor and a plain HDMI cable, without adapters or switches. Live view takes about a fifth of one processor core. Off, the display output is stopped, which saves about 0.8 W, nearly a third of the camera'"'"'s power. Turning it on or off restarts the streams.</p>'
+    printf '<button>Save</button></form></section>'
+}
+
 wifi_section() {
     printf '<section id="wifi"><h2>Wi-Fi</h2>'
     if [ "$MODE" = lan ]; then
@@ -1205,6 +1239,7 @@ settings_page() {
     ptz_section
     detect_section
     mqtt_section
+    hdmi_section
     wifi_section
     device_section
     frigate_section

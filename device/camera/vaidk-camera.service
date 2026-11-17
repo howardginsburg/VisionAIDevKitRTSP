@@ -1,6 +1,7 @@
 [Unit]
 Description=Vision AI DevKit camera (vaidk-camd)
-After=qmmf-server.service qmmf-webserver.service vaidk-rtsp.service
+# After init_display (the vendor's display server, for HDMI live view): at shutdown the camera stops first.
+After=qmmf-server.service qmmf-webserver.service vaidk-rtsp.service init_display.service
 Wants=qmmf-server.service vaidk-rtsp.service
 
 [Service]
