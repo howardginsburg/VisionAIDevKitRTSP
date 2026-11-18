@@ -35,7 +35,7 @@ Everything else was read from the camera itself.
 | Firmware | `v0.5370_Perf` (`/etc/version`; `/etc/os-release` names the product `concam`). Qualcomm meta build `QCS605.LE.1.0-00037-STD.PROD-1`, apps `LE.UM.2.3.3.r1-04300-QCS605.0-1`; DSP firmware built for the SDM710 family. **No updates**: the product is retired |
 | Kernel | Linux 4.9.123-perf, built 7 February 2020, 32-bit (`armv7l`). No initramfs. The root file system, `mmcblk0p14`, is mounted read-only but isn't verified (no dm-verity on it), so it can be remounted read-write. SELinux is permissive. The kernel carries on after an error (`panic_on_oops` 0) and never gives up on a stuck task (`hung_task_panic` 0), so nothing restarts a camera that a crash has left unresponsive; and Qualcomm's crash-dump mode is on (`download_mode` 1), in which a panic waits for a PC to collect a memory dump. The add-on changes these ([device/recovery](device/recovery/README.md)) |
 | Userland | Yocto-based: systemd 234, BusyBox 1.24.1, glibc 2.26, libstdc++ 6.0.22 (GCC 6), Python 3.5.3 with part of the standard library, OpenSSH 7.5p1, OpenSSL 1.0.2o (March 2018) |
-| Camera stack | Qualcomm's `qmmf-server`: the camera, the image processor, the H.264/H.265 encoders and the microphones, through the CamX camera HAL and the audio HAL. Two vendor front ends: `qmmf-webserver` (RTSP and an HTTP API on port 4000) and `ipc-webserver` (a preview page on port 1080, user `admin`, password `admin`) |
+| Camera stack | Qualcomm's `qmmf-server`: the camera, the image processor, the H.264/H.265 encoders and the microphones, through the CamX camera HAL and the audio HAL. Two vendor front ends: `qmmf-webserver` (RTSP and an HTTP API on port 4000, without sign-in, over IPv4 and IPv6) and `ipc-webserver` (a preview page on port 1080, user `admin`, password `admin`) |
 | Azure | IoT Edge 1.0.8.3 (installed, not running) and Docker 3.0.5 (running). The vendor's boot script loads Microsoft's vision sample and IoT Edge containers into Docker |
 | Vendor services | `altekflow` (lights, power button, battery protection), `wifimonitor` (Wi-Fi state for the lights), `websettings` (the setup site), `startvirtualsoftap`, `hostapd` and `dnsmasq` (the setup network) |
 | Access | ADB over USB: a root shell, with no authorization (`ro.adb.secure` unset). SSH on port 22, socket-activated and on in the image, for accounts the vendor setup created; that setup could also turn SSH off. The firmware has no SSH host keys: the camera makes its own the first time SSH is used |
@@ -152,11 +152,11 @@ Trade-offs:
 ## Risks
 
 - **USB means root.** Anyone with the camera and a USB cable has a root shell, as on the stock camera.
-- **Open streams and plain HTTP.** RTSP has no password, and the setup page's sign-in isn't encrypted.
-  The talk-back channel has no password either, so anything on the network can play sound on the
-  speaker while it is on, and neither has the ONVIF service, so anything on the network can move the
-  view. With the kernel from 2020 and OpenSSL and OpenSSH from 2018, keep the camera on a trusted
-  network or VLAN, never exposed to the internet.
+- **Unencrypted streams and plain HTTP.** The streams and talk-back need the admin account, by
+  Digest, but the video and sound aren't encrypted, and someone who records a sign-in can try
+  passwords offline. The setup page's sign-in (HTTP Basic) isn't encrypted, and the ONVIF service has
+  no password, so anything on the network can move the view. With the kernel from 2020 and OpenSSL
+  and OpenSSH from 2018, keep the camera on a trusted network or VLAN, never exposed to the internet.
 - **Writes to the read-only root.** The installer, the setup page when it creates or deletes the
   admin account's home directory, and `camd.sh tz` when the time zone changes, remount the root file
   system read-write for a moment. A power cut at that moment could damage it, and a damaged root

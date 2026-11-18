@@ -1,7 +1,8 @@
 # RTSP server
 
 `vaidk-rtsp.service` runs `rtspd.py`, the camera's RTSP server. It receives the encoded streams from
-the [camera program](../camera/README.md) and serves them to Frigate, VLC or any other RTSP client.
+the [camera program](../camera/README.md) and serves them to Frigate, VLC or any other RTSP client
+that signs in with the admin account ([Stream sign-in](#stream-sign-in)).
 
 | URL | Contents |
 |---|---|
@@ -11,8 +12,9 @@ the [camera program](../camera/README.md) and serves them to Frigate, VLC or any
 | File | What it is |
 |---|---|
 | [rtspd.py](rtspd.py) | The RTSP server |
+| [rtsp.sh](rtsp.sh) | Starts it with the sign-in settings |
 | [net.sh](net.sh) | Network settings, applied before the server starts |
-| [vaidk-rtsp.service](vaidk-rtsp.service) | systemd unit: runs `net.sh`, then the server; restarts it 2 s after it exits |
+| [vaidk-rtsp.service](vaidk-rtsp.service) | systemd unit: runs `net.sh`, then `rtsp.sh`; restarts the server 2 s after it exits |
 
 ## How it works
 
@@ -46,7 +48,7 @@ the [camera program](../camera/README.md) and serves them to Frigate, VLC or any
 ### Talk-back
 
 The main stream carries a talk-back channel: the ONVIF Streaming Specification's backchannel, which
-go2rtc (and so Frigate) uses for two-way audio.
+go2rtc (and so Frigate) uses for two-way audio. A client signs in before it can ask for it.
 
 - **Offered on request.** Only a `DESCRIBE` with `Require: www.onvif.org/ver20/backchannel` gets it,
   as a third track, so other players never see it:
@@ -91,6 +93,58 @@ go2rtc (and so Frigate) uses for two-way audio.
 - **RTCP sender reports**, sent right after `PLAY` and then every 2 s, map both streams to the same
   wall clock, which is how players line audio up with video.
 
+## Stream sign-in
+
+With `STREAM_AUTH=1` (the default), both ports need the admin account, by HTTP Digest (RFC 2617), the
+sign-in RTSP players know.
+
+- **What needs it:** every request except `OPTIONS`. A connection signs in once; its later requests,
+  and talk-back on it, need nothing more.
+- **The challenge:** `401 Unauthorized` with `WWW-Authenticate: Digest realm="Vision AI DevKit",
+  nonce="..."`, a random nonce for each connection that is good only on it. It offers no `qop`,
+  because go2rtc (Frigate's client) and live555 (VLC's) answer without one; an answer with
+  `qop=auth`, as FFmpeg gives when offered, is accepted too. MD5 only.
+- **No Basic:** a Basic answer would carry the admin password, which also unlocks SSH and `sudo`, in
+  clear on every connection. It gets the Digest challenge again, and isn't counted as wrong, because
+  some players try Basic first.
+- **Old nonces:** the right password with another connection's nonce gets a new challenge with
+  `stale=TRUE`, so a player that reuses one signs in on its next try.
+- **The camera itself** (127.x) doesn't sign in.
+
+**The key.** The server never sees the password. The setup page writes
+`/data/misc/vaidk/stream-key` (root only) when the admin password is set or entered: one line,
+`USER HA1 FINGERPRINT`, where `HA1` is MD5(`USER:Vision AI DevKit:password`), the hash Digest needs,
+and `FINGERPRINT` is the SHA-256 of the account's password hash in `/etc/shadow`. Before writing it,
+the page checks the password against `/etc/shadow` with BusyBox `cryptpw`, which reads it from a
+pipe. The server looks at the key, the admin account
+(`/data/misc/vaidk/admin`) and `/etc/shadow` every 2 s, so changes take effect without a restart.
+
+**Locked.** The streams refuse every password until the admin password is entered once on the setup
+page (Video tab, **Stream sign-in**), or over USB with `ui.sh stream-key`. `rtsp.status` says why:
+
+| `auth_reason` | When |
+|---|---|
+| `no-key` | No key, or one for another account: after updating from a version without sign-in, or when an existing account became the admin account (`ui.sh adopt-admin`), whose password the add-on never saw |
+| `password-changed` | The fingerprint no longer matches: the password was changed outside the setup page, such as with `passwd` over SSH |
+| `no-account` | There is no admin account yet (setup mode) |
+
+**When the key changes** (a new password, or the streams lock), every connection signed in with the
+old key closes; players reconnect and sign in with the new password.
+
+**Wrong passwords and spare places:**
+
+| Limit | Value |
+|---|---|
+| Wrong answers on one connection | 3, then it closes once its last reply is sent (5 s at most); anything more it sends is ignored |
+| Time to sign in | 15 s, then the connection closes |
+| Connections not yet signed in, at once | 4 of the 8 places, so signed-in players keep the rest; 3 from one address, so one host can't take them all. When all 4 are taken, the one waiting longest gives way to a newcomer and counts as a failure, so idle connections can't keep players out |
+| Failures from one address: wrong answers, and connections that didn't sign in in time | 10 within a minute; then its new connections are refused for a minute. There is no account lockout, which would itself stop Frigate |
+| A request's `Authorization` header and body | Up to 1 KB and 16 KB; a longer answer counts as wrong, and a bad `Content-Length` closes the connection |
+
+**Off.** Add `STREAM_AUTH=0` to `/data/misc/vaidk/vaidk.conf` and run
+`systemctl restart vaidk-rtsp`: anyone who can reach the camera can then watch it and use its
+speaker. The setup page doesn't offer this.
+
 ## Status
 
 `/run/vaidk/rtsp.status`, rewritten every second:
@@ -105,6 +159,9 @@ go2rtc (and so Frigate) uses for two-way audio.
 | `video_latency_ms` | From capture to the server, for the latest main video frame |
 | `audio_latency_ms` | Steady-state delay of the audio behind its capture time |
 | `clients` | Players currently connected from the network |
+| `main_viewers`, `sub_viewers` | The address of each of those players, once per connection (the setup page's **Players** and **Stream viewers**) |
+| `auth` | Stream sign-in: `on`, `off` or `locked` |
+| `auth_reason` | Why the streams are locked ([above](#stream-sign-in)); empty otherwise |
 
 `/run/vaidk/streaming` exists while the camera program is connected and every enabled stream (main,
 sub, audio) has delivered within the last 5 s. The [status lights](../lights/README.md) and the
@@ -115,23 +172,31 @@ sub, audio) has delivered within the last 5 s. The [status lights](../lights/REA
 - **Send buffers.** Raises the kernel's socket send buffers (`wmem_max` 4 MB, `wmem_default` 1 MB,
   `tcp_wmem` up to 4 MB), so a keyframe burst to a player on slow Wi-Fi fits.
 - **Vendor control APIs.** With `LOCK_CONTROL_API=1`, rejects TCP connections to ports 4000 (the
-  vendor media server) and 1080 (the vendor preview server) from anywhere but the camera itself.
-  Port 4000 has no authentication and port 1080 uses `admin`/`admin`; nothing in the add-on uses either.
+  vendor media server) and 1080 (the vendor preview server) from anywhere but the camera itself, over
+  IPv4 (`iptables`) and IPv6 (`ip6tables`): the media server listens on both (`:::4000`). Port 4000
+  has no authentication and port 1080 uses `admin`/`admin`; nothing in the add-on uses either. Then
+  it checks that each rule is in place; if an IPv6 rule can't be added, it logs a warning and turns
+  IPv6 off on the Wi-Fi interfaces instead.
 - **Setup network.** Drops packets from `192.168.143.0/24` that arrive over the Wi-Fi client
   (`wlan0`): the setup page trusts that subnet, which must only exist on the camera's own setup
   network.
 
-The settings it reads, `LOCK_CONTROL_API`, are in [defaults.conf](../defaults.conf).
+The settings it reads, `LOCK_CONTROL_API` here and `STREAM_AUTH` in `rtsp.sh`, are in
+[defaults.conf](../defaults.conf).
 
 ## Logs and checks
 
 ```sh
-journalctl -u vaidk-rtsp --no-pager -n 30        # camera connections, players and talkers
+journalctl -u vaidk-rtsp --no-pager -n 30        # camera connections, players, talkers and sign-in
 cat /run/vaidk/rtsp.status
-ffprobe -rtsp_transport tcp rtsp://<camera-ip>:8900/live   # from your PC
+ffprobe -rtsp_transport tcp rtsp://<user>:<password>@<camera-ip>:8900/live   # from your PC
 ```
 
-`talk-back from <address>` in the log marks a new client taking the speaker.
+`talk-back from <address>` in the log marks a new client taking the speaker. Sign-in logs
+`stream sign-in: on, as <user>` or `the streams are locked: <why>`; `wrong stream password from
+<address>`, `<address> didn't sign in within 15 s` and `<address> gave its place to a newcomer: it
+hadn't signed in` at most every 10 s per address; and `too many failed stream sign-ins from
+<address>` when it refuses one.
 
 ## Why Python, and how
 

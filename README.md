@@ -24,7 +24,7 @@ Assistant, VLC or any NVR. No Azure account, IoT Hub or SSH is needed: you insta
 finish setup from a phone.
 
 - **Two RTSP streams:** a main stream for recording (up to 4K at 30 fps) and a low-resolution sub
-  stream for detection.
+  stream for detection, both signed in with the admin account.
 - **Microphone audio:** the main stream carries the camera's built-in microphones as AAC, ready for
   recordings and Frigate's audio detection. You can turn it off.
 - **Talk-back:** the camera's speaker plays what you say from Frigate's live view or Home
@@ -101,9 +101,9 @@ minutes the camera opens its setup Wi-Fi network and the installer prints its na
    exact name). The password is on the sticker under the camera; you can also read it with
    `adb shell cat /persist/data/wifi.bin`.
 2. A sign-in page opens automatically. If it doesn't, browse to `http://192.168.143.1/`.
-3. Choose your Wi-Fi network and enter its password, create the admin account (it's also your SSH
-   login), name the camera, pick a stream profile and choose whether to include microphone audio,
-   then select **Save and connect**.
+3. Choose your Wi-Fi network and enter its password, create the admin account (it also signs in to
+   the streams and SSH), name the camera, pick a stream profile and choose whether to include
+   microphone audio, then select **Save and connect**.
 4. The page shows the camera's new address. The camera restarts, and its lights turn solid green
    once it is streaming (about two minutes). Switch back to your usual Wi-Fi and open
    `http://<camera-ip>/`, signing in with the admin account.
@@ -129,6 +129,24 @@ minutes the camera opens its setup Wi-Fi network and the installer prints its na
   main stream. The combinations that were tested are listed in
   [device/camera/README.md](device/camera/README.md#settings-it-uses).
 
+### Sign-in
+
+Players sign in to both streams, and to talk-back, with the admin account. Most take its user name
+and password in the stream address: `rtsp://<user>:<password>@<camera-ip>:8900/live`.
+
+- **Digest:** the password crosses the network only as a Digest answer, never in clear; the camera
+  refuses Basic sign-in. The video and sound themselves aren't encrypted.
+- **Special characters:** in an address, URL-encode `@ : / ? # %` and other reserved characters of
+  the password (`p@ss` becomes `p%40ss`). The setup page's **Frigate** tab does it for you.
+- **A new admin password** is also the streams' new password: update Frigate and other players.
+- **Locked streams:** the streams refuse every password until you enter the admin password once on
+  the setup page (**Video** tab, **Stream sign-in**). That happens after updating from a version
+  without stream sign-in, when an existing account became the admin account, or after the password
+  was changed outside the setup page, such as with `passwd` over SSH. Over USB:
+  `adb shell sh /opt/vaidk/web/ui.sh stream-key`, then type the password and press Enter.
+- **Off:** `STREAM_AUTH=0` turns sign-in off ([how](device/rtsp/README.md#stream-sign-in)); anyone who
+  can reach the camera can then watch it and use its speaker.
+
 ### Frigate
 
 The setup page shows this snippet with your camera's address and settings:
@@ -137,11 +155,11 @@ The setup page shows this snippet with your camera's address and settings:
 go2rtc:
   streams:
     vision-ai-devkit:
-      - rtsp://192.168.1.50:8900/live#backchannel=0
+      - rtsp://admin:PASSWORD@192.168.1.50:8900/live#backchannel=0
     vision-ai-devkit_sub:
-      - rtsp://192.168.1.50:8901/live
+      - rtsp://admin:PASSWORD@192.168.1.50:8901/live
     vision-ai-devkit_twoway:
-      - rtsp://192.168.1.50:8900/live
+      - rtsp://admin:PASSWORD@192.168.1.50:8900/live
       - ffmpeg:vision-ai-devkit_twoway#audio=opus
 cameras:
   vision-ai-devkit:
@@ -177,6 +195,13 @@ cameras:
 - **`go2rtc`:** Frigate's built-in go2rtc connects to the camera once per stream and
   [restreams](https://docs.frigate.video/configuration/restream) it to Frigate's recorder and
   detector on `127.0.0.1:8554`.
+- **`admin:PASSWORD@`:** the admin account, for the streams' [sign-in](#sign-in). On the setup page's
+  **Frigate** tab, type the password to fill it in, URL-encoded. To keep it out of Frigate's
+  configuration, put the URL-encoded password in an environment variable of Frigate's container,
+  such as `FRIGATE_VAIDK_PASSWORD`, and write `{FRIGATE_VAIDK_PASSWORD}` in its place.
+- **Frigate's restream:** port 8554 has no password unless you give go2rtc's `rtsp` a `username` and
+  `password` ([Frigate's docs](https://docs.frigate.video/configuration/restream#securing-restream-with-authentication));
+  until then anyone who can reach Frigate can watch the camera there, sign-in or not.
 - **`#backchannel=0`:** the recording stream doesn't take the talk-back channel, as Frigate
   [recommends](https://docs.frigate.video/configuration/restream#two-way-talk-restream). go2rtc
   reconnects a stream when someone starts talking, so this also keeps talking from interrupting
@@ -204,8 +229,8 @@ cameras:
 ## Talk-back
 
 Speak through the camera's speaker from Frigate or Home Assistant. The main stream offers a
-two-way audio channel (the ONVIF backchannel that go2rtc uses); the camera plays what arrives and
-mutes its microphones meanwhile.
+two-way audio channel (the ONVIF backchannel that go2rtc uses), behind the stream's
+[sign-in](#sign-in); the camera plays what arrives and mutes its microphones meanwhile.
 
 - **Frigate:** open the camera's live view and select the microphone button to start talking;
   select it again to stop. Frigate needs
@@ -256,7 +281,9 @@ arrows and clicks do nothing until the view is zoomed.
   Frigate's player (pinch or scroll) doesn't move the camera's view.
 - **Home Assistant:** add the camera with the
   [ONVIF integration](https://www.home-assistant.io/integrations/onvif/): the camera's address, port
-  8080, and an empty username and password. Its `onvif.ptz` action then moves the view, for example
+  8080, and the admin account's user name and password. The ONVIF service doesn't check them, but
+  Home Assistant adds them to the stream address it plays; after changing the admin password, update
+  them in the integration and reload it. Its `onvif.ptz` action then moves the view, for example
   (use your camera's entity):
 
   ```yaml
@@ -393,8 +420,8 @@ Open `http://<camera-ip>/` and sign in with the admin account. The settings are 
 - **Overview:** the streams' addresses and health, what object detection sees, the camera's health
   (processor, temperatures, memory, storage, battery and power, crashes), Wi-Fi, and which features
   are on. Each links to its settings.
-- **Video:** the main and sub stream resolution, frame rate, bitrate and codec; the picture; the
-  on-screen text and its time zone; HDMI live view.
+- **Video:** the main and sub stream resolution, frame rate, bitrate and codec; stream sign-in; the
+  picture; the on-screen text and its time zone; HDMI live view.
 - **Audio:** the microphone and its gain; talk-back, the speaker volume, and a speaker test.
 - **Pan & zoom:** pan, tilt and zoom on or off; show the whole picture; save, use or delete presets.
 - **Detection:** object detection, what it reports and how; publishing detections to an MQTT broker.
@@ -439,7 +466,9 @@ restarting after a crash, can be changed by hand ([how](device/README.md#setting
 
 The admin account is also your SSH login, in place of the original setup's SSH account. It signs in
 as `ssh <user>@<camera-ip>` and can use `sudo`. Creating or changing the admin account turns SSH on,
-even if the original setup had left it off; the add-on never turns SSH off.
+even if the original setup had left it off; the add-on never turns SSH off. Changing its password
+over SSH (`passwd`) locks the streams until you enter the new password on the setup page
+([Sign-in](#sign-in)).
 
 ## Reinstall or uninstall
 
@@ -451,6 +480,10 @@ even if the original setup had left it off; the add-on never turns SSH off.
 Uninstalling restores the camera's original software and setup experience. Reflashing the firmware
 also removes everything, and the camera makes new SSH host keys: remove the old one from your
 computer with `ssh-keygen -R <camera-ip>`.
+
+Reinstalling over a version without stream sign-in turns it on with the streams locked: enter the
+admin password once on the setup page (the installer says where), then add the admin account to
+Frigate's stream addresses ([Sign-in](#sign-in)).
 
 ## Troubleshooting
 
@@ -469,8 +502,13 @@ computer with `ssh-keygen -R <camera-ip>`.
   restarts one that has stopped responding. If nothing lights up, let it charge for half an hour and
   try again. As a last resort, press the reset button in the pinhole on the right side with a
   paperclip.
-- **No picture:** test the main stream with VLC (**Media > Open Network Stream**) and check that the
-  lights are solid green.
+- **No picture:** test the main stream with VLC (**Media > Open Network Stream**, then the admin
+  account when it asks) and check that the lights are solid green.
+- **A player or Frigate gets `401 Unauthorized`:** the streams need the admin account
+  ([Sign-in](#sign-in)); check the user name and the URL-encoded password in the address. If the
+  setup page's Overview shows sign-in as **Locked**, enter the admin password on the **Video** tab.
+  The RTSP server's log names the cause: `wrong stream password from <address>`, or `the streams are
+  locked`.
 - **No sound:** check that the setup page shows the microphone as on, then raise the gain. The
   camera's noise suppression mutes steady background noise, so test by speaking near the camera.
 - **Talk-back is silent:** select **Test speaker** on the setup page. If the chime plays, check that
@@ -500,10 +538,14 @@ computer with `ssh-keygen -R <camera-ip>`.
 
 ## Security notes
 
-- The RTSP streams have no password. Keep the camera on a trusted network or VLAN.
-- The talk-back channel has no password either: anything that can reach the main stream can play
-  sound on the camera's speaker. Turn talk-back off on the setup page if you don't use it.
-- The ONVIF service (port 8080) has no password either: anything on your network can move the view
+- The RTSP streams and talk-back need the admin account (Digest sign-in), but the video and sound
+  aren't encrypted. Keep the camera on a trusted network or VLAN.
+- Frigate's restream (port 8554) has no password unless you set one, so anyone who can reach Frigate
+  can watch the camera there ([Frigate](#frigate)).
+- The admin password also unlocks SSH and `sudo`, and Frigate's configuration, or any player that
+  keeps it, holds it. Someone who records a Digest sign-in on your network can try passwords
+  offline, so use a long one.
+- The ONVIF service (port 8080) has no password: anything on your network can move the view
   and change the presets, which changes what Frigate records. Turn pan, tilt and zoom off on the
   setup page if you don't use it.
 - On your network the setup page uses HTTP Basic sign-in, which is not encrypted.
@@ -512,7 +554,8 @@ computer with `ssh-keygen -R <camera-ip>`.
 - Anyone who joins the setup network can change settings without signing in. That network is
   protected by the password on the sticker, and normally opens only when you hold the power button,
   after a reset, or when Wi-Fi is unavailable.
-- The vendor's own control interfaces (ports 1080 and 4000) are blocked from the network.
+- The vendor's own control interfaces (ports 1080 and 4000) are blocked from the network, over IPv4
+  and IPv6.
 
 ## How it works
 
@@ -520,10 +563,10 @@ The add-on keeps the camera's own firmware and its Qualcomm camera service, `qmm
 replaces everything above it. A small native program, `vaidk-camd`, runs the camera, the microphone,
 the speaker and HDMI live view; a second, `vaidk-detect`, runs the camera's own object detector on the
 DSP; a Python
-RTSP server serves the streams and the talk-back channel; a Python ONVIF service moves the digital
-view; a Python MQTT client publishes detections; shell scripts run Wi-Fi, the setup page, crash
-recovery, storage upkeep and the boot sequence, without the retired IoT Hub step. Nothing needs Azure
-or any other cloud service.
+RTSP server serves the streams and the talk-back channel behind Digest sign-in; a Python ONVIF service
+moves the digital view; a Python MQTT client publishes detections; shell scripts run Wi-Fi, the setup
+page, crash recovery, storage upkeep and the boot sequence, without the retired IoT Hub step. Nothing
+needs Azure or any other cloud service.
 
 ## Documentation
 

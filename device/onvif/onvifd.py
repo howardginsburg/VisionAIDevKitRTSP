@@ -2,8 +2,8 @@
 # Vision AI DevKit RTSP add-on: ONVIF service (device, media and PTZ), so Frigate, Home Assistant and
 # NVRs can find the camera's streams and pan, tilt and zoom it. The pan, tilt and zoom are digital: a
 # crop of the sensor that both streams are scaled from. This service keeps the position, writes it to
-# /run/vaidk/ptz.conf and signals vaidk-camd (SIGUSR2), which applies it to the camera. No password,
-# like the RTSP streams; WS-Security headers are ignored.
+# /run/vaidk/ptz.conf and signals vaidk-camd (SIGUSR2), which applies it to the camera. No password
+# (unlike the RTSP streams, which sign in); WS-Security headers are ignored.
 #
 # The camera's Python has only part of the standard library (no socket, threading, signal, json or xml
 # modules), so this uses _socket and select directly and reads SOAP requests with regular expressions.

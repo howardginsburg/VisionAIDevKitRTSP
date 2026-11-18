@@ -15,13 +15,18 @@
 # measured on CLOCK_MONOTONIC_RAW, which runs at the capture clock's rate whatever NTP does to the
 # system clock.
 # RTSP over TCP only: UDP SETUPs get "461 Unsupported Transport" and clients retry over TCP.
+# Stream sign-in (STREAM_AUTH=1): every request but OPTIONS needs the admin account, by Digest (never
+# Basic, which would send the admin password in clear), once per connection. The setup page writes the
+# key (STREAM_KEY_FILE); see the Auth class. Connections from the camera itself (127.x) don't sign in.
 # Writes /run/vaidk/rtsp.status, and /run/vaidk/streaming while every stream is flowing.
 #
 # usage: rtspd.py [SOCKET [MAIN_PORT [SUB_PORT]]]
+# A second instance (for tests) also needs RTSP_STATUS and RTSP_STREAMING, so it leaves the real status alone.
 # The camera's Python 3.5 has no socket/selectors/threading modules, so this uses _socket and
 # a single epoll loop.
 import _socket
 import binascii
+import hashlib
 import os
 import random
 import re
@@ -33,8 +38,13 @@ import time
 SOCKET_PATH = sys.argv[1] if len(sys.argv) > 1 else "/run/vaidk/media.sock"
 MAIN_PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 8900
 SUB_PORT = int(sys.argv[3]) if len(sys.argv) > 3 else 8901
-STATUS_FILE = "/run/vaidk/rtsp.status"
-STREAMING_FLAG = "/run/vaidk/streaming"
+STATUS_FILE = os.environ.get("RTSP_STATUS", "/run/vaidk/rtsp.status")
+STREAMING_FLAG = os.environ.get("RTSP_STREAMING", "/run/vaidk/streaming")
+STREAM_AUTH = os.environ.get("STREAM_AUTH", "1") != "0"
+REALM = os.environ.get("STREAM_REALM", "")
+KEY_FILE = os.environ.get("STREAM_KEY_FILE", "/data/misc/vaidk/stream-key")
+ADMIN_FILE = os.environ.get("ADMIN_FILE", "/data/misc/vaidk/admin")
+SHADOW_FILE = "/etc/shadow"
 
 MAX_CLIENTS = 8
 MAX_PAYLOAD = 1400              # RTP payload bytes per packet
@@ -46,6 +56,18 @@ SYNC_WINDOW = 3.0               # seconds of audio arrival history used to detec
 SYNC_TOLERANCE = 0.06           # audio drift (seconds) that triggers a whole-frame correction
 SESSION_TIMEOUT = 60
 TALK_HOLD = 1.0                 # a talker keeps the speaker until silent this long
+AUTH_CHECK = 2.0                # seconds between checks of the stream key, the admin account and its password
+AUTH_TIMEOUT = 15.0             # a connection that hasn't signed in closes after this long
+AUTH_TRIES = 3                  # ... or after this many wrong answers
+MAX_UNSIGNED = 4                # connections not signed in at once (when all are taken, the one waiting
+MAX_UNSIGNED_EACH = 3           # longest gives way to a newcomer), and from one address
+MAX_AUTH = 1024                 # longest Digest answer read
+MAX_BODY = 16384                # longest request body
+CLOSE_WAIT = 5.0                # a closing connection gets this long to take its last replies
+FAIL_WINDOW = 60.0              # an address that gets the password wrong (or doesn't sign in in time)
+FAIL_LIMIT = 10                 # FAIL_LIMIT times within FAIL_WINDOW seconds has its new connections
+BLOCK_FOR = 60.0                # refused for BLOCK_FOR seconds
+DIGEST_FIELD = re.compile(r'\s*([A-Za-z0-9_-]+)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|([^\s,"]*))\s*(?:,|$)')
 BACKCHANNEL = "www.onvif.org/ver20/backchannel"
 MAGIC = 0x4B494156              # "VAIK", see camd.cpp
 HEADER = struct.Struct("<IBBHQQI")
@@ -472,13 +494,191 @@ class CameraInput:
         log("camera streams: %s" % "; ".join("%s %s" % kv for kv in sorted(info.items())))
 
 
+def md5hex(text):
+    return hashlib.md5(text.encode("utf-8")).hexdigest()
+
+
+def same_secret(a, b):
+    """Compares two strings in a time that doesn't depend on where they differ."""
+    if len(a) != len(b):
+        return False
+    diff = 0
+    for x, y in zip(a, b):
+        diff |= ord(x) ^ ord(y)
+    return diff == 0
+
+
+def uri_path(uri):
+    """The path of an RTSP URL, without a trailing slash: rtsp://user@host:8900/live/ -> /live."""
+    m = re.match(r"[A-Za-z][A-Za-z0-9+.-]*://[^/]*(/.*)?$", uri)
+    path = (m.group(1) or "/") if m else uri
+    return path.rstrip("/") or "/"
+
+
+def parse_digest(value):
+    """The fields of a Digest Authorization header, or None for another scheme. Matched field by field
+    from where the last one ended, so a crafted header can't make the expression backtrack across all of
+    it; one longer than MAX_AUTH gets no fields, so it counts as a wrong answer."""
+    if value[:7].lower() != "digest ":
+        return None
+    fields, rest, pos = {}, value[7:], 0
+    if len(rest) > MAX_AUTH:
+        return fields
+    while pos < len(rest):
+        m = DIGEST_FIELD.match(rest, pos)
+        if not m or m.end() == pos:
+            break
+        quoted = m.group(2)
+        fields[m.group(1).lower()] = re.sub(r"\\(.)", r"\1", quoted) if quoted is not None else m.group(3)
+        pos = m.end()
+    return fields
+
+
+def new_nonce():
+    return binascii.hexlify(os.urandom(16)).decode("ascii")
+
+
+def file_stamp(path):
+    try:
+        st = os.stat(path)
+        return st.st_ino, st.st_size, st.st_mtime_ns
+    except OSError:
+        return None
+
+
+def read_text(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+LOCKED_BECAUSE = {
+    "no-account": "there is no admin account yet",
+    "no-key": "enter the admin password on the setup page (Video tab, Stream sign-in) to unlock them",
+    "password-changed": "the admin password was changed outside the setup page; enter it there to unlock them",
+}
+
+
+class Auth:
+    """Stream sign-in with the admin account, by Digest. The setup page writes the key, KEY_FILE: one line,
+    "USER HA1 FINGERPRINT", where HA1 = MD5(USER:REALM:password) and FINGERPRINT is the SHA-256 of the
+    account's password hash in /etc/shadow. Without a key, with a key for another account, or once the
+    fingerprint no longer matches (the password was changed some other way, such as passwd over SSH),
+    the streams are locked until the admin password is entered on the setup page. Any change of the key
+    closes the sessions signed in with the old one."""
+
+    def __init__(self):
+        self.enabled = STREAM_AUTH
+        self.state, self.reason = (None, "") if self.enabled else ("off", "")
+        self.user = self.ha1 = None
+        self.stamps = None
+        self.next_check = 0.0
+        self.failures = {}          # address -> times of its recent wrong answers
+        self.blocked = {}           # address -> its new connections are refused until
+        self.quiet = {}             # address -> nothing more logged about it until
+
+    def load(self):
+        """(state, reason, user, HA1) from the files."""
+        admin = read_text(ADMIN_FILE).split()
+        if not admin:
+            return "locked", "no-account", None, None
+        user, key = admin[0], read_text(KEY_FILE).split()
+        if not REALM or len(key) != 3 or key[0] != user or not re.match(r"[0-9a-f]{32}$", key[1]):
+            return "locked", "no-key", None, None
+        hashed = ""
+        for line in read_text(SHADOW_FILE).splitlines():
+            fields = line.split(":")
+            if fields[0] == user and len(fields) > 1:
+                hashed = fields[1]
+        if not hashed or not same_secret(hashlib.sha256(hashed.encode("utf-8")).hexdigest(), key[2]):
+            return "locked", "password-changed", None, None
+        return "on", "", user, key[1]
+
+    def check(self, t):
+        """Reloads the sign-in when the key, the admin account or the passwords change."""
+        if not self.enabled or t < self.next_check:
+            return
+        self.next_check = t + AUTH_CHECK
+        for table in (self.blocked, self.quiet):
+            for ip in [ip for ip, until in table.items() if until <= t]:
+                del table[ip]
+        for ip in [ip for ip, times in self.failures.items() if times[-1] <= t - FAIL_WINDOW]:
+            del self.failures[ip]
+        stamps = (file_stamp(KEY_FILE), file_stamp(ADMIN_FILE), file_stamp(SHADOW_FILE))
+        if stamps == self.stamps:
+            return
+        self.stamps = stamps
+        state, reason, user, ha1 = self.load()
+        if (state, reason, user, ha1) == (self.state, self.reason, self.user, self.ha1):
+            return
+        revoke = (user, ha1) != (self.user, self.ha1)
+        same_user_new_key = self.state == "on" and state == "on" and user == self.user
+        self.state, self.reason, self.user, self.ha1 = state, reason, user, ha1
+        if state == "on":
+            log("stream sign-in: on, as %s%s" % (user, ", with a new password" if same_user_new_key else ""))
+        else:
+            log("stream sign-in: the streams are locked: %s" % LOCKED_BECAUSE[reason])
+        if revoke:
+            for c in list(clients.values()):
+                if c.signed_in and not c.local:
+                    c.close("stream sign-in changed")
+
+    def verify(self, client, method, uri, fields):
+        """'ok', 'stale' (the right password, for an earlier nonce) or 'wrong'."""
+        if self.state != "on" or fields.get("username") != self.user or fields.get("realm") != REALM \
+                or fields.get("algorithm", "MD5").upper() != "MD5":
+            return "wrong"
+        digest_uri = fields.get("uri", "")
+        if uri_path(digest_uri) != uri_path(uri):
+            return "wrong"
+        ha2 = md5hex("%s:%s" % (method, digest_uri))
+        nonce, qop = fields.get("nonce", ""), fields.get("qop")
+        if qop is None:             # RFC 2069, as go2rtc and live555 (VLC) answer: no qop is offered
+            expected = md5hex("%s:%s:%s" % (self.ha1, nonce, ha2))
+        elif qop == "auth":
+            expected = md5hex("%s:%s:%s:%s:%s:%s" % (self.ha1, nonce, fields.get("nc", ""), fields.get("cnonce", ""),
+                                                     qop, ha2))
+        else:
+            return "wrong"
+        if not same_secret(expected, fields.get("response", "").lower()):
+            return "wrong"
+        return "ok" if same_secret(nonce, client.nonce) else "stale"
+
+    def failed(self, ip, t, note):
+        """Counts a wrong answer, or a connection that never signed in; too many from one address refuse
+        its new connections for a while. Logs note, at most every 10 s per address."""
+        times = [x for x in self.failures.get(ip, ()) if x > t - FAIL_WINDOW] + [t]
+        self.failures[ip] = times
+        if len(times) >= FAIL_LIMIT:
+            del self.failures[ip]
+            self.blocked[ip] = t + BLOCK_FOR
+            log("too many failed stream sign-ins from %s: refusing its connections for %d s" % (ip, BLOCK_FOR))
+        elif t >= self.quiet.get(ip, 0):
+            self.quiet[ip] = t + 10
+            log(note)
+
+    def refused_locked(self, ip, t):
+        if t >= self.quiet.get(ip, 0):
+            self.quiet[ip] = t + 10
+            log("refused %s: the streams are locked" % ip)
+
+    def refuses(self, ip, t):
+        return self.blocked.get(ip, 0) > t
+
+
 class Client:
     """One RTSP client connection: requests in, interleaved RTP/RTCP out."""
 
     def __init__(self, sock, addr, stream):
         self.sock, self.fd, self.stream = sock, sock.fileno(), stream
-        self.peer = "%s:%d" % addr
+        self.peer, self.ip = "%s:%d" % addr, addr[0]
         self.local = addr[0].startswith("127.")
+        self.signed_in = self.local or not auth.enabled
+        self.nonce = new_nonce()        # this connection's Digest challenge
+        self.wrong = 0                  # wrong answers to it
+        self.closing_at = 0.0
         self.inbuf, self.out = bytearray(), bytearray()
         self.session = None
         self.vch = self.ach = self.bch = None       # interleaved channels: video, audio, backchannel
@@ -547,9 +747,11 @@ class Client:
         if not data:
             self.close(None)
             return
+        if self.closing:
+            return                                      # closing: what it sends now is neither read nor kept
         self.inbuf += data
         buf = self.inbuf
-        while buf and not self.closed:
+        while buf and not self.closed and not self.closing:
             if buf[0] == 0x24:                          # interleaved RTP/RTCP from the client
                 if len(buf) < 4:
                     break
@@ -566,7 +768,13 @@ class Client:
                     self.close("oversized request")
                 break
             first, headers = parse_head(bytes(buf[:end]).decode("latin-1"))
-            length = int(headers.get("content-length", "0") or 0)
+            try:
+                length = int(headers.get("content-length", "0") or 0)
+            except ValueError:
+                length = -1
+            if not 0 <= length <= MAX_BODY:
+                self.close("bad Content-Length")
+                break
             if len(buf) < end + 4 + length:
                 break
             del buf[:end + 4 + length]
@@ -585,6 +793,8 @@ class Client:
             return
         method, uri = parts[0].upper(), parts[1]
         cseq = headers.get("cseq", "0")
+        if method != "OPTIONS" and not self.signed_in and not self.sign_in(method, uri, cseq, headers):
+            return
         session = headers.get("session", "").split(";")[0].strip()
         if session and session != self.session and method not in ("OPTIONS", "DESCRIBE"):
             self.reply(cseq, "454 Session Not Found")
@@ -616,13 +826,43 @@ class Client:
         elif method == "TEARDOWN":
             self.playing = False
             self.reply(cseq, "200 OK", session_header)
-            self.closing = True
-            if not self.out:
-                self.close(None)
+            self.finish()
         elif method in ("GET_PARAMETER", "SET_PARAMETER"):
             self.reply(cseq, "200 OK", session_header)
         else:
             self.reply(cseq, "501 Not Implemented")
+
+    def sign_in(self, method, uri, cseq, headers):
+        """Checks the request's Digest answer. Unless it signs the connection in, replies 401 with this
+        connection's challenge and returns False."""
+        given = headers.get("authorization", "")
+        fields = parse_digest(given) if given else None
+        result = auth.verify(self, method, uri, fields) if fields is not None else "none"
+        if result == "ok":
+            self.signed_in = True
+            return True
+        t = now()
+        if result == "stale":
+            self.nonce = new_nonce()
+        elif fields is not None:
+            # A Basic answer isn't counted: some players send one before reading the challenge.
+            self.wrong += 1
+            if auth.state == "on":
+                name = re.sub(r"[^A-Za-z0-9._@-]", "?", fields.get("username") or "")[:32] or "-"
+                auth.failed(self.ip, t, "wrong stream password from %s (user %s)" % (self.ip, name))
+        if auth.state != "on":
+            auth.refused_locked(self.ip, t)
+        self.reply(cseq, "401 Unauthorized", ['WWW-Authenticate: Digest realm="%s", nonce="%s"%s'
+                                              % (REALM, self.nonce, ", stale=TRUE" if result == "stale" else "")])
+        if self.wrong >= AUTH_TRIES:
+            self.finish()
+        return False
+
+    def finish(self):
+        """Closes the connection once its last replies are sent, or after CLOSE_WAIT seconds."""
+        self.closing, self.closing_at = True, now()
+        if not self.out:
+            self.close(None)
 
     def setup(self, cseq, uri, transport):
         s = self.stream
@@ -655,6 +895,16 @@ class Client:
 
     def service(self, t):
         if self.closed:
+            return
+        if self.closing and t - self.closing_at > CLOSE_WAIT:
+            self.close(None)
+            return
+        if not self.signed_in and t - self.opened > AUTH_TIMEOUT:
+            # Counted like a wrong password. Idling can only delay others: when the unsigned places are
+            # all taken, the connection waiting longest gives way to a newcomer (accept()).
+            if auth.state == "on":
+                auth.failed(self.ip, t, "%s didn't sign in within %d s" % (self.ip, AUTH_TIMEOUT))
+            self.close(None)
             return
         s = self.stream
         off = camera.connected and not s.enabled          # the camera isn't producing this stream
@@ -731,6 +981,18 @@ def accept(listener, stream):
         except OSError:
             return
         sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM, 0, fd)
+        ip, t = addr[0], now()
+        if not ip.startswith("127.") and auth.enabled:
+            unsigned = [c for c in clients.values() if not c.signed_in]
+            if auth.refuses(ip, t) or sum(1 for c in unsigned if c.ip == ip) >= MAX_UNSIGNED_EACH:
+                sock.close()
+                continue
+            if len(unsigned) >= MAX_UNSIGNED:
+                # The one waiting longest gives way, and counts as a failure, so idling can't lock others out.
+                oldest = min(unsigned, key=lambda c: c.opened)
+                if auth.state == "on":
+                    auth.failed(oldest.ip, t, "%s gave its place to a newcomer: it hadn't signed in" % oldest.ip)
+                oldest.close(None)
         if len(clients) >= MAX_CLIENTS:
             sock.close()
             continue
@@ -750,6 +1012,9 @@ def healthy(t):
 def write_status(t):
     def age(stamp):
         return "%d" % (t - stamp) if stamp else "-1"
+
+    def viewers(stream):            # the address of each player, once per connection
+        return " ".join(sorted(c.ip for c in clients.values() if c.stream is stream and c.playing and not c.local))
     lines = ["time=%d" % time.time(), "camera=%d" % camera.connected,
              "main=%s" % (main.vcodec if main.enabled else "off"), "main_age=" + age(main.last_video),
              "sub=%s" % (sub.vcodec if sub.enabled else "off"), "sub_age=" + age(sub.last_video),
@@ -757,7 +1022,9 @@ def write_status(t):
              "audio_age=" + age(main.last_audio), "audio_corrections=%d" % main.corrections,
              "video_latency_ms=%d" % (main.video_latency * 1000),
              "audio_latency_ms=%d" % ((main.a_base or 0) * 1000),
-             "clients=%d" % sum(1 for c in clients.values() if c.playing and not c.local)]
+             "clients=%d" % sum(1 for c in clients.values() if c.playing and not c.local),
+             "main_viewers=" + viewers(main), "sub_viewers=" + viewers(sub),
+             "auth=%s" % (auth.state or "locked"), "auth_reason=%s" % auth.reason]
     try:
         with open(STATUS_FILE + ".tmp", "w") as f:
             f.write("\n".join(lines) + "\n")
@@ -775,6 +1042,7 @@ main = Stream("main", MAIN_PORT)
 sub = Stream("sub", SUB_PORT)
 streams = (main, sub)
 camera = CameraInput(SOCKET_PATH)
+auth = Auth()
 
 
 def run():
@@ -786,8 +1054,11 @@ def run():
     listeners = {}                  # fd -> (listening socket, stream)
     next_bind, next_status, bind_logged = 0.0, 0.0, set()
     log("RTSP server: main :%d, sub :%d, camera input %s" % (MAIN_PORT, SUB_PORT, SOCKET_PATH))
+    if not auth.enabled:
+        log("stream sign-in: off (STREAM_AUTH=0): anyone who can reach the camera can watch")
     while True:
         t = now()
+        auth.check(t)
         if len(listeners) < len(streams) and t >= next_bind:
             bound = [s for _, s in listeners.values()]
             for s in streams:

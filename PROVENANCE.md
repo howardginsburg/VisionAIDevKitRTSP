@@ -29,6 +29,7 @@ Every piece of the add-on is one of three kinds:
 - [Object detection](#object-detection)
 - [MQTT](#mqtt)
 - [HDMI output](#hdmi-output)
+- [Stream sign-in](#stream-sign-in)
 - [How it was tested](#how-it-was-tested)
 - [Status lights](#status-lights)
 - [Restart after a crash](#restart-after-a-crash)
@@ -191,7 +192,8 @@ the camera, so the client had to be C++ built for the camera:
 
 ## RTSP streams
 
-**Files**: `device/rtsp/rtspd.py`, `device/rtsp/net.sh`, `device/rtsp/vaidk-rtsp.service`. Authored.
+**Files**: `device/rtsp/rtspd.py`, `device/rtsp/rtsp.sh`, `device/rtsp/net.sh`,
+`device/rtsp/vaidk-rtsp.service`. Authored.
 
 **In the way.**
 - **No RTSP server** on the camera but the vendor's, and no package manager to install one.
@@ -216,7 +218,9 @@ has: `_socket`, `select.epoll`, `struct`, `binascii` and `re`, in one event loop
 - **Players outlive the camera program.** When `vaidk-camd` restarts, players stay connected and
   carry on at the next keyframe.
 - **The vendor's control ports are closed** to the network: `net.sh` rejects connections to ports 4000
-  and 1080 from anything but the camera itself.
+  and 1080 from anything but the camera itself, over IPv4 and, since
+  [stream sign-in](#stream-sign-in) found the gap, IPv6.
+- **Players sign in** with the admin account ([Stream sign-in](#stream-sign-in)).
 
 | Obstacle | Fix |
 |---|---|
@@ -316,7 +320,7 @@ library both use, `onvif-zeep-async` (Frigate pins 4.0; Home Assistant uses the 
 | How Frigate and Home Assistant control it | Their PTZ support (ONVIF); a new API | ONVIF: both already speak it |
 | Which program serves ONVIF | `rtspd.py`; `vaidk-camd`; a service of its own | A Python service of its own: it can be turned off, and a fault in it never touches the streams |
 | How a move reaches `vaidk-camd` | The live settings file and `SIGHUP`; a file and signal of its own | Its own (`/run/vaidk/ptz.conf`, `SIGUSR2`): moves update ten times a second, without re-applying the picture settings |
-| Password | WS-Security user tokens; none | None, like the streams |
+| Password | WS-Security user tokens; none | None, like the streams at the time. The streams now sign in ([Stream sign-in](#stream-sign-in)); ONVIF sign-in wasn't part of that |
 | `Stop` with `Zoom=false` | As specified: the zoom carries on; stop everything | Stop everything, as many cameras do, so Home Assistant's timed zooms stop |
 | Zoom limit | The camera's 8x; 4x | 4x: beyond 2x the 1080p stream enlarges pixels |
 
@@ -493,6 +497,84 @@ Tested on the camera with a 1080p computer monitor, you watching it, while strea
 
 Not tested: televisions, which Microsoft says may not recognise the camera, and the bridge's 4K mode,
 which weston doesn't choose.
+
+## Stream sign-in
+
+**Files**: in `device/rtsp/`, the `Auth` class and `Client.sign_in` in `rtspd.py`, `rtsp.sh`, and the
+IPv6 rules in `net.sh`; in `device/web/ui.sh`, the streams' key (`stream_key`), the **Stream sign-in**
+card, the `stream-key` command and the Frigate tab's password box; `STREAM_AUTH` in
+`device/defaults.conf`. Authored.
+
+**In the way.**
+- **Open streams.** Anyone who could reach the camera could watch both streams, hear the microphones
+  and talk through the speaker. The vendor's own RTSP server and API, on port 4000, have no sign-in
+  either.
+- **An IPv6 way round the firewall.** `qmmf-webserver` listens on IPv6 too (`:::4000`), but
+  `LOCK_CONTROL_API` added only IPv4 rules: `ip6tables` was empty, and the camera has a link-local IPv6
+  address on Wi-Fi. That API can start camera sessions and capture images.
+- **No way to check a password in Python.** The camera's Python has no `crypt` module. `hashlib`
+  works (through OpenSSL's `_hashlib`), so MD5 for Digest does.
+- **The server never sees the password.** It is set on the setup page, or with `passwd` over SSH.
+
+**What the add-on does.** Digest sign-in with the admin account, on both ports and talk-back, with
+the hash Digest needs kept in a root-only key that the setup page writes
+([how it works](device/rtsp/README.md#stream-sign-in)).
+
+| Question | Options | Chosen |
+|---|---|---|
+| Which account | The admin account; a separate stream user; a token in the address | The admin account (your choice): one account for the page, the streams and SSH |
+| Which scheme | Basic; Digest; RTSPS (TLS) | Digest: every RTSP player knows it, and the password never crosses the network. Basic would send the admin password, which unlocks SSH and `sudo`, in clear on every connection. RTSPS isn't in this round: few players support it |
+| `qop` in the challenge | `qop=auth`; none | None: go2rtc and live555 (VLC) answer without one. An answer with `qop=auth` is accepted |
+| What the server keeps | The password; Digest's hash | The hash (HA1) only, in `/data/misc/vaidk/stream-key` |
+| Staying current | Restart on a change; watch the files | It checks the key, the admin record and `/etc/shadow` every 2 s. The key carries a fingerprint of the account's password hash, so a password changed some other way locks the streams rather than leaving the old one working |
+| Checking a typed password | Python `crypt` (missing); a request to the web server's sign-in; BusyBox `cryptpw` | `cryptpw`, with the method and salt from `/etc/shadow`, reading the password from a pipe |
+| Reinstalling over a version without it | Off until turned on; on and locked | On and locked (your choice): Frigate stops until its addresses carry the admin account |
+| Guessing | Account lockout; per connection; per address | 3 wrong answers per connection, 15 s to sign in, and at most 4 connections not yet signed in, 3 from one address; when all 4 are taken, the one waiting longest gives way to a newcomer. 10 failures from one address in a minute (wrong answers, and connections that never signed in) refuse its connections for a minute. No account lockout, which would stop Frigate too |
+| Turning it off | On the setup page; by hand | By hand only (`STREAM_AUTH=0`) |
+| The IPv6 gap | `ip6tables`; IPv6 off | `ip6tables` rules like the IPv4 ones, checked once added; IPv6 off on Wi-Fi only if they can't be |
+| Players on the setup page | Established connections; the server's own list | The server's list (`main_viewers`, `sub_viewers`): a connection that hasn't signed in isn't a player |
+| Frigate's restream on port 8554 | Password it; leave it | Left open for now (your choice); the README says how to protect it |
+| Frigate's copy of the password | In its configuration; a `FRIGATE_` environment variable | In the configuration, for this camera's Frigate (your choice); the README describes both |
+
+Not in this round: an allow-list of players, ONVIF sign-in, RTSPS, and HTTPS for the setup page.
+
+Tested on the camera, with Frigate 0.18 on both streams:
+
+| Test | Result |
+|---|---|
+| The Digest logic on the camera's Python 3.5.3: RFC 2617's worked example, the form without `qop`, an old nonce, the wrong method, resource, user or password, `MD5-sess`, `auth-int`; long and malformed answers; the key's states; reloading; the per-address limit; a closing connection | 48 of 48 passed. (RFC 2069's own example answer is a known erratum, so RFC 2617's served as the reference) |
+| A second server on spare ports, from a PC: `OPTIONS` open; `DESCRIBE` challenged; signed in; three wrong answers; `qop=auth`; an old nonce; Basic; the sub port; a 16 KB answer; bad `Content-Length`s; a 4th unsigned connection from one address; idle ones; all 4 unsigned places taken; a key change; no key; ten wrong answers in a minute | 26 of 26 passed: the challenge offered no `qop`; the connection closed after three wrong answers; Basic was refused but not counted; the 16 KB answer was refused within 0.2 s, with other players unaffected; each bad `Content-Length` closed only its own connection; the 4th connection from one address was refused while another address got in; idle connections closed after 15 s; with all 4 places taken, a newcomer got in and only the connection waiting longest gave way; a changed key closed the signed-in session; new connections were refused after ten wrong answers |
+| `ui.sh stream-key` | A wrong password: refused, no key written. The right one: a root-only key whose hash matched one worked out on the PC, and whose fingerprint matched `/etc/shadow`. `cryptpw` took 36 ms |
+| The hash for passwords with `@ : / ? # %`, quotes, `$`, a backtick, a backslash, trailing spaces and `ü` | The camera's shell and Python on the PC agree |
+| Frigate's three go2rtc addresses given the admin account while the camera still ignored it, Frigate restarted, then the new server started | Both streams signed in within a second; the two-way stream's `DESCRIBE` got the talk-back track; no wrong passwords from Frigate in the 25 minutes that followed |
+| FFmpeg (PyAV 18.1) from a PC | The main stream, 1080p with AAC, at 29.3 fps over 60 s; the sub stream at 5.0 fps; a wrong password refused with `401` |
+| VLC (live555 2026.06.24) | Signed in without `qop`, and recorded 1080p H.264 with audio |
+| Talk-back after sign-in: a second of G.711 silence on the backchannel | `talk-back from` the PC; the speaker on with the microphones muted, off after 1.1 s |
+| Locked and unlocked through the setup page | A wrong password: refused on the card, the key unchanged. The key removed: locked (`no-key`), Frigate's sessions closed, and the card and the Overview offered the form; the right password unlocked the streams in 4.8 s and Frigate came back. `chpasswd` with the same password (a new salt) over SSH: locked (`password-changed`), as the card said; entered again, on |
+| The Frigate tab's password box, in Edge | `p@ss:w/rd?#%!` filled in as `p%40ss%3Aw%2Frd%3F%23%25!` in all three addresses; cleared, the placeholder came back; no script errors |
+| The players list | A connection that never signed in wasn't listed; two players from one address showed as "(2 connections)" |
+| IPv6 | Before: `:::4000` listening, `ip6tables` empty. After: REJECT rules for 4000 and 1080 in both tables |
+| Cost | `rtspd.py` at 12.2 % of a core over 60 s with Frigate on both streams (10 to 11 % in earlier readings); the sign-in check itself 2.8 µs per pass of the server's loop and 30 µs per reload, 0.04 % of a core |
+| The server with the fixes below, installed on the camera | Frigate back on both streams within 8 s of the restart. FFmpeg: the main stream at 29.1 fps over 20 s, the sub stream at 5.0 fps, the talk-back `DESCRIBE` with its backchannel, a wrong password refused |
+
+**Found along the way,** in two reviews of the server, and fixed:
+- **A long answer could hold up every player.** The first Digest parser's pattern could backtrack
+  over a long header, quadratically in its length, in the server's single loop. It now reads one
+  field at a time, and an answer over 1 KB counts as wrong unread.
+- **`Content-Length` wasn't checked, in the released server too.** There, one request with
+  `Content-Length: x` ended the server's process with a `ValueError` (tested on spare ports); as a
+  service, that is a restart 2 s later with every player cut off. A huge value made it keep
+  everything the client sent. Such a request now closes its own connection; the server carries on.
+- **Idle connections could keep players out.** One host could take every place for connections not
+  yet signed in, and two could still hold all four by reconnecting as each timed out. Now one address
+  has at most three, and when all four are taken, the one waiting longest gives way to a newcomer.
+- **A closing connection kept what it was sent.** After three wrong answers, a client that never read
+  its last reply kept the connection open, and the server kept what it sent. It is now ignored, and
+  the connection closes after 5 s regardless.
+
+Not tested: reaching port 4000 over IPv6 from another device, as the PC's Wi-Fi had no IPv6 address;
+and a reinstall with the installers, as the camera wasn't on USB. The locked state after such an
+update was tested by removing the key, which leaves the same state.
 
 ## How it was tested
 
@@ -769,7 +851,7 @@ Tested on the camera, streaming to Frigate:
 |---|---|
 | The settings page's load time | 1.9 s on the camera and about 2.2 s over Wi-Fi, against about 0.9 s before; the one-second measurement is most of the difference |
 | The figures against the camera's own sources | The processor 36 to 38 % busy, with `qmmf-server` at 80 to 88 % of one core and `rtspd.py` at 10 to 11 %, as earlier readings of `/proc` showed. Memory, storage, flash wear, power and the Wi-Fi link matched `/proc/meminfo`, `df`, the eMMC's files, the power supply's files and `iw` |
-| Stream viewers | Frigate's server, on both streams |
+| Stream viewers | Frigate's server, on both streams. Since [stream sign-in](#stream-sign-in), the list comes from the RTSP server rather than from established connections |
 | Layout | A phone screen 390 pixels wide and a desktop window, light and dark: every value wrapped within its column |
 
 ## Installing over USB

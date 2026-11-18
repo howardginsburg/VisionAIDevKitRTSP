@@ -96,7 +96,7 @@ if [ "$(value state "$state")" = setup ]; then
     echo "  1. Join the Wi-Fi network '$ssid'. Its password is on the sticker under the camera"
     echo "     (or run: adb shell cat /persist/data/wifi.bin)."
     echo "  2. A sign-in page should open. If it does not, browse to http://192.168.143.1/"
-    echo "  3. Choose your Wi-Fi network, create the admin account (it's also your SSH login), and select Save and connect."
+    echo "  3. Choose your Wi-Fi network, create the admin account (it also signs in to the streams and SSH), and select Save and connect."
     exit 0
 fi
 
@@ -107,6 +107,15 @@ echo "Done. The camera kept its settings."
 echo "  Setup page:  http://$ip/"
 echo "  Main stream: rtsp://$ip:8900/live$([ "$(value audio "$state")" = on ] && echo ' (with microphone audio; turn it off on the setup page)')"
 echo "  Sub stream:  rtsp://$ip:8901/live"
+case "$(value stream_auth "$state")" in
+    on) echo "  Players sign in with the admin account: rtsp://$(value admin "$state"):PASSWORD@$ip:8900/live" ;;
+    locked)
+        if [ -n "$(value admin "$state")" ]; then
+            echo "  Stream sign-in is on, and the streams stay locked until you enter the admin password once:"
+            echo "  open http://$ip/cgi-bin/admin.cgi?p=video#stream-auth, or run: adb shell sh /opt/vaidk/web/ui.sh stream-key"
+            echo "  Then add the admin account to Frigate's stream addresses (the setup page's Frigate tab shows them)."
+        fi ;;
+esac
 if [ -z "$(value admin "$state")" ]; then
     echo "  No admin account is set yet: hold the power button for 5 seconds and finish setup on the camera's Wi-Fi,"
     echo "  or run: adb shell sh /opt/vaidk/web/ui.sh set-admin admin   (then type the password and press Enter)"

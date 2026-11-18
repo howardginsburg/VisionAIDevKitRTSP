@@ -30,8 +30,8 @@ the installers' status check.
 
 **First-time setup** (setup network, no saved Wi-Fi network):
 1. **Your Wi-Fi.** A list of nearby networks, or a name typed in, and the password.
-2. **Admin account.** Signs in to this page from your network, and over SSH, which saving it turns
-   on.
+2. **Admin account.** Signs in to this page from your network, to the streams, and over SSH, which
+   saving it turns on.
 3. **Camera.** The name, the stream profile (1080p main + 640x360 sub, or 4K main + 720p sub) and
    whether to include the microphone.
 
@@ -46,12 +46,13 @@ message inside it.
 
 | Tab | Card | What it shows or changes |
 |---|---|---|
-| Overview | Streams | Streaming or recovering; each stream's address and settings; the players connected. **Restart streams** |
+| Overview | Streams | Streaming or recovering; each stream's address and settings; the players connected; stream sign-in (a link to unlock the streams when they are locked). **Restart streams** |
 | | Object detection | Off, or what the [detector](../detect/README.md) is doing and what is in view |
 | | Health | Processor (measured over half a second), temperatures, memory, storage, battery and power (a warning on a computer's USB port), crashes since start, time running |
 | | Wi-Fi | Network, signal, address and link, or the saved network when it isn't connected |
 | | Features | Microphone, talk-back, pan, tilt and zoom, on-screen text, MQTT and HDMI output: on or off, each a link to its card |
 | Video | Streams | Main: resolution, frame rate, bitrate, codec. Sub: on or off, resolution, frame rate, bitrate; while object detection is on, the sub stream stays on at 640x360 and only its frame rate and bitrate can change. Saving restarts the camera service |
+| | Stream sign-in | On, off, or locked and why ([the RTSP server's sign-in](../rtsp/README.md#stream-sign-in), from its status). Locked, it asks for the admin password: checked against `/etc/shadow`, it writes the streams' key, then waits until the RTSP server has read it |
 | | Picture | Light flicker, exposure, white balance, colour and sharpness. Saving applies them at once (`camd.sh reload`) |
 | | On-screen text | Date and time, camera name or both; the corner; main stream or both; the time zone (a list, or a POSIX string under **Another time zone**). Saving updates `qmmf-server`'s time zone if it changed (`camd.sh tz`) and restarts the camera service |
 | | HDMI output | Off, or live view of the main stream on a monitor plugged into the camera ([HDMI live view](../camera/README.md#hdmi-live-view)). Changing it restarts the camera service, which starts or stops the vendor's display server |
@@ -61,7 +62,7 @@ message inside it.
 | | View and presets | While it is on: the current zoom, **Show the whole picture**, and the presets: go to, delete, or save the current view under a name. It asks the service over its local address ([the setup page](../onvif/README.md#the-setup-page)) |
 | Detection | Object detection | While it is on, what the detector is doing: running (analyses a second and the time each takes), starting, or why it stopped; what is in view; when each object was last seen; the latest detections, in the on-screen clock's time zone; the model and SNPE version. Then: on or off, the lowest confidence, analyses a second, boxes on the main stream, and the objects to report (the defaults, and **More objects** with the rest of the 80). Turning it on sets the sub stream to 640x360 if it wasn't, and says so; turning it on or off restarts the camera service and the detector; objects and confidence restart only the detector; the rate and the boxes apply at once (`camd.sh reload`) |
 | | MQTT | While it is on, the [MQTT service](../mqtt/README.md)'s state: connected and messages sent, connecting, the broker's answer when it refuses (such as a wrong password), or waiting for object detection. Then: on or off, the broker and port, user name and password (blank keeps the saved one; kept apart from the settings, readable only by root), the topic prefix, and Home Assistant discovery. Saving restarts the service |
-| Frigate | Frigate configuration | Built from the current settings: go2rtc streams (with a separate two-way stream when talk-back is on) and the camera entry, with its `onvif` part when pan, tilt and zoom is on. A click selects all of it |
+| Frigate | Frigate configuration | Built from the current settings: go2rtc streams (with a separate two-way stream when talk-back is on) and the camera entry, with its `onvif` part when pan, tilt and zoom is on. With stream sign-in on, the stream addresses carry the admin user and a `PASSWORD` placeholder; a password typed in the box above them fills it in, URL-encoded, in the browser only (the page's one script). A click selects all of it |
 | System | System | The camera's health in detail, measured as the page loads ([what each line shows](#the-system-section)). **Measure again** |
 | | Wi-Fi | Join another network |
 | | Camera name and admin account | The name (page title, Frigate name, on-screen name, DHCP host name), the admin user and password |
@@ -91,13 +92,14 @@ only the processor's counters, half a second apart.
 | Battery, Power | Charge, state and voltage; the power source, with a warning on a computer's USB port, where the battery can run down while streaming | `/sys/class/power_supply`: `battery`, `usb`, `pc_port`, `dc` |
 | Wi-Fi link | Band, channel and transmit rate | `iw dev wlan0 link` |
 | Wi-Fi traffic | Sent and received during that second, and since the camera started | `wlan0`'s byte counters |
-| Stream viewers | The address of each player connected to the main and sub streams | Established connections to ports 8900 and 8901 in `/proc/net/tcp` and `tcp6` |
+| Stream viewers | The address of each player of the main and sub streams; connections that haven't signed in don't count | `main_viewers` and `sub_viewers` in the RTSP server's status, `/run/vaidk/rtsp.status` |
 | Crashes since start | How many programs crashed since the camera started, and the latest | `/run/vaidk/crashes`, kept by [storage upkeep](../storage/README.md#crashes) |
 | Running for, Firmware | Time since the camera started; the firmware version | `/proc/uptime`, `/etc/version` |
 
 ## The admin account
 
-The admin account is a Linux user: it signs in to this page and over SSH, and can use `sudo`.
+The admin account is a Linux user: it signs in to this page, to the streams and over SSH, and can
+use `sudo`.
 - **New user.** Created with a home directory and the groups `sudo`, `inet` and `sdcard`. (The vendor
   setup's accounts also join `docker` and `iotedge`, which the add-on doesn't use.) Home directories
   are on the read-only root file system, so `ui.sh` remounts it read-write (`with_rw_root` in
@@ -113,6 +115,12 @@ The admin account is a Linux user: it signs in to this page and over SSH, and ca
   an adopted one.
 - **Record.** The account is recorded in `/data/misc/vaidk/admin` as `<user> created` or
   `<user> adopted`.
+- **The streams' key.** Setting the password (first-time setup, the System tab, `ui.sh set-admin`)
+  also writes the RTSP server's Digest key, `/data/misc/vaidk/stream-key`, after checking the password
+  against `/etc/shadow` ([format](../rtsp/README.md#stream-sign-in)). Adopting an account removes the
+  key, since its password was never entered here: the streams stay locked until it is entered on the
+  Video tab or with `ui.sh stream-key`. One password change or key is written at a time (`flock` on
+  `/run/vaidk/account.lock`), so a key never pairs one password with another's hash.
 
 ## Safeguards
 
@@ -128,8 +136,9 @@ The admin account is a Linux user: it signs in to this page and over SSH, and ca
   letter or digit), and preset tokens only digits, before they go into a request to the ONVIF
   service.
 - Output is HTML-escaped by `ui.sh` itself: BusyBox's own escaping breaks UTF-8 network names.
-- Passwords go to `chpasswd` on its standard input, never on a command line. The Wi-Fi password is
-  stored only as its WPA2 key hash.
+- Passwords go to `chpasswd` and `cryptpw` on their standard input, never on their command lines. The
+  Wi-Fi password is stored only as its WPA2 key hash, and the admin password only as the system's
+  hash and the streams' Digest key.
 - Responses that aren't `200 OK` (redirects, `403`) write their full status line: this BusyBox turns a
   CGI `Status:` header into `HTTP/1.0  303` with two spaces, which strict HTTP clients reject.
 
@@ -150,12 +159,14 @@ the camera, and these files answer them with a page that opens the setup page:
 Run on the camera as root (`adb shell`, or SSH with `sudo`):
 
 ```sh
-sh /opt/vaidk/web/ui.sh info               # state, address, setup network, streaming, microphone, admin
+sh /opt/vaidk/web/ui.sh info               # state, address, setup network, streaming, microphone, admin, stream sign-in
 sh /opt/vaidk/web/ui.sh set-admin <user>   # create or update the admin account; reads the password
-sh /opt/vaidk/web/ui.sh adopt-admin <user> # make an existing sudo account the admin
+sh /opt/vaidk/web/ui.sh adopt-admin <user> # make an existing sudo account the admin (locks the streams)
+sh /opt/vaidk/web/ui.sh stream-key         # unlock the streams: reads the admin password, writes their key
 sh /opt/vaidk/web/ui.sh forget             # forget Wi-Fi, settings, presets and the admin account
 sh /opt/vaidk/web/ui.sh reset              # forget everything, then restart into setup mode
 ```
 
 `info` prints `key=value` lines: `state` (`starting`, `setup` or `configured`), `ip`, `setup_ap`,
-`setup_ssid`, `streaming`, `audio` and `admin`. The installers use it to follow the camera's restart.
+`setup_ssid`, `streaming`, `audio`, `admin` and `stream_auth` (`on`, `off` or `locked`, from the RTSP
+server's status). The installers use it to follow the camera's restart.

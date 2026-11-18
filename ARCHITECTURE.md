@@ -128,7 +128,8 @@ flowchart LR
   at once, then sends the frame, with its capture time, to the RTSP server from its own thread
   ([the media socket](camd/README.md#output-the-media-socket)).
 - **`rtspd.py`** packs the frames into RTP inside each player's RTSP connection (TCP only), for up to
-  8 players ([how it works](device/rtsp/README.md#how-it-works)).
+  8 players ([how it works](device/rtsp/README.md#how-it-works)), once each connection has signed in
+  with the admin account ([stream sign-in](device/rtsp/README.md#stream-sign-in)).
 - **Each side restarts on its own.** If the camera pipeline stalls, `vaidk-camd` exits and systemd
   starts a fresh camera session; `rtspd.py` keeps the players connected meanwhile, and they carry on
   at the next keyframe. If `rtspd.py` restarts, the players reconnect.
@@ -322,6 +323,7 @@ flowchart LR
 | `scan`, `scan.conf` | The setup page (cached scan results) and `wifi.sh scan` | The setup page |
 | `csrf` | The setup page, once per boot | The setup page (form tokens) |
 | `httpd.conf` | `ui.sh write-httpd-conf` | BusyBox `httpd` (the sign-in rule) |
+| `account.lock` | `ui.sh`, which holds a `flock` on it while it changes the admin password or writes the streams' key | `ui.sh`, which waits for it |
 | `build.prop` | `storage.sh`, which copies it from `/systemrw` at boot and binds it over `/systemrw/build.prop` and `/etc/build.prop`; then `leprop-service` | Every program that reads or sets a vendor property; `storage.sh`, which saves it to flash when it changed |
 | `crashes` | `storage.sh crash`, which the kernel runs when a program crashes; the cleanup, for crash dumps from before the service started | The setup page's **System** section; you |
 | `flash.<pid>` (a folder) | `storage.sh`, for the moment it takes to save `build.prop`: a private bind of `/systemrw` | `storage.sh` |
@@ -337,6 +339,7 @@ flowchart LR
     load --> camd["camd.sh and mic.sh"]
     load --> wifi["wifi.sh"]
     load --> net["net.sh"]
+    load --> rtspsh["rtsp.sh"]
     load --> ui["ui.sh"]
     load --> onvif["onvif.sh"]
     load --> detsh["detect.sh"]
@@ -344,6 +347,7 @@ flowchart LR
     camd -- "settings at start<br/>live ones on SIGHUP" --> prog["vaidk-camd"]
     camd -- "camd.sh tz: drop-in" --> qmmf["qmmf-server<br/>time zone"]
     camd -- "HDMI: start or stop" --> weston["weston<br/>display server"]
+    rtspsh -- "settings at start" --> rtspd["rtspd.py"]
     detsh -- "settings at start" --> det["vaidk-detect"]
     mqttsh -- "settings at start" --> mq["mqttd.py"]
     classDef use fill:#d5e8d4,stroke:#82b366,color:#1a1a1a
@@ -352,7 +356,7 @@ flowchart LR
     classDef os fill:#fff2cc,stroke:#d6b656,color:#1a1a1a
     class page,hand use
     class defaults,conf data
-    class load,camd,wifi,net,ui,onvif,detsh,mqttsh,prog,det,mq mod
+    class load,camd,wifi,net,rtspsh,ui,onvif,detsh,mqttsh,prog,rtspd,det,mq mod
     class qmmf,weston os
 ```
 
@@ -383,6 +387,7 @@ flowchart LR
 | `FALLBACK_AFTER`, `AP_MIN_UP`, `AP_IDLE_EXIT` | The Wi-Fi watchdog | When `vaidk-wifi` restarts, or at the next boot |
 | `WIFI_COUNTRY` | `ui.sh`, which writes it into each Wi-Fi network it saves; `wifi.sh scan` | For the next network saved |
 | `LOCK_CONTROL_API` | `net.sh` | When `vaidk-rtsp` starts. Rules already in place stay until the next boot |
+| `STREAM_AUTH` | `rtsp.sh`, which passes it to `rtspd.py` (not on the setup page); `ui.sh` (the page's hints and the Frigate entry) | When `vaidk-rtsp` restarts |
 | `ONVIF`, `ONVIF_PORT` | `onvif.sh`; `ui.sh` (the page and the Frigate entry) | When `vaidk-onvif` restarts. Turning pan, tilt and zoom on or off restarts it |
 | `DETECT` | `camd.sh`, which passes it to `vaidk-camd`; `detect.sh` | When the camera service and the detector restart. Turning detection on or off on the setup page restarts both |
 | `DETECT_OBJECTS`, `DETECT_CONFIDENCE` | `detect.sh`, which passes them to `vaidk-detect` and writes the confidence into VAM's configuration | When `vaidk-detect` restarts. Saving **Object detection** restarts it when they changed |
@@ -397,6 +402,7 @@ Besides the settings, the add-on keeps:
 |---|---|---|
 | `/data/misc/vaidk/wpa_supplicant.conf` | The saved Wi-Fi network, with the password's WPA2 key hash | `wifi.sh try`, once it has joined the network |
 | `/data/misc/vaidk/admin` | Which user is the admin account, and whether the add-on created or adopted it | `ui.sh` |
+| `/data/misc/vaidk/stream-key` | The streams' Digest key for the admin account, readable only by root: the user, the hash Digest needs, and a fingerprint of the account's password hash ([format](device/rtsp/README.md#stream-sign-in)) | `ui.sh`, when the admin password is set or entered to unlock the streams |
 | `/data/misc/vaidk/ptz` | The pan, tilt and zoom position, home position and presets | `onvifd.py` |
 | `/data/misc/vaidk/models/builtin` | The object detector's model and labels (27 MB), copied from the vendor's vision sample the first time detection starts | `detect.sh` |
 | `/data/misc/vaidk/mqtt-password`, `/data/misc/vaidk/mqtt-discovery` | The MQTT broker's password, readable only by root; what was announced to Home Assistant, so it can be removed | `ui.sh`; `mqttd.py`, only when that changes |
@@ -424,7 +430,7 @@ flowchart TB
     rest --> altek["altekflow<br/>lights and power button"]
     power --> svc["systemd starts the services"]
     svc --> qmmf["qmmf-server and qmmf-webserver"]
-    svc --> rtsp["vaidk-rtsp<br/>net.sh, then rtspd.py"]
+    svc --> rtsp["vaidk-rtsp<br/>net.sh, then rtsp.sh and rtspd.py"]
     svc --> web["vaidk-web<br/>the setup page"]
     svc --> watch["vaidk-wifi<br/>waits for boot-wifi-done"]
     svc --> recovery["vaidk-recovery<br/>restart after a crash"]
@@ -553,14 +559,14 @@ sequenceDiagram
 
 | Port | Served by | Who can use it |
 |---|---|---|
-| 8900/tcp | `rtspd.py`: the main stream, audio and the talk-back channel | Anyone on the network: no sign-in |
-| 8901/tcp | `rtspd.py`: the sub stream | Anyone on the network: no sign-in |
+| 8900/tcp | `rtspd.py`: the main stream, audio and the talk-back channel | Players that sign in with the admin account (Digest); anyone, with `STREAM_AUTH=0` |
+| 8901/tcp | `rtspd.py`: the sub stream | Players that sign in with the admin account (Digest); anyone, with `STREAM_AUTH=0` |
 | 8080/tcp | `onvifd.py`: ONVIF device, media and PTZ services | Anyone on the network: no sign-in. Its `/local/ptz` address answers only the camera itself |
 | 80/tcp | BusyBox `httpd`: the setup page | On the setup network, without sign-in. On your network, the admin account (HTTP Basic) |
 | 22/tcp | `sshd`, started on connection | Linux accounts, including the admin account |
 | 53, 67/udp | The vendor's `dnsmasq` | Devices on the setup network: addresses, and the captive portal's DNS. Another vendor instance serves an internal bridge, `bridge0` (192.168.225.1), with nothing attached |
-| 4000/tcp | `qmmf-webserver` | Rejected from the network (`LOCK_CONTROL_API`) |
-| 1080/tcp | `ipc-webserver`, disabled | Rejected from the network (`LOCK_CONTROL_API`) |
+| 4000/tcp | `qmmf-webserver` | Rejected from the network, over IPv4 and IPv6 (`LOCK_CONTROL_API`) |
+| 1080/tcp | `ipc-webserver`, disabled | Rejected from the network, over IPv4 and IPv6 (`LOCK_CONTROL_API`) |
 
 Other vendor services listen only on the camera itself (127.0.0.1). ADB is USB only. With MQTT on, the
 camera also connects out to your broker (port 1883 by default); it listens for nothing more. The
@@ -595,7 +601,7 @@ device/                      everything copied to /opt/vaidk on the camera; devi
   install-device.sh          installs, reinstalls or removes the add-on, on the camera
   boot/                      the boot script's builder and its systemd drop-in
   camera/                    camd.sh, mic.sh, vaidk-camd (built from camd/), the unit, and the display server's drop-in and weston.ini
-  rtsp/                      rtspd.py, net.sh and the unit
+  rtsp/                      rtspd.py, rtsp.sh, net.sh and the unit
   onvif/                     onvifd.py, onvif.sh and the unit
   detect/                    detect.sh, objects.txt, vaidk-detect (built from camd/) and the unit
   mqtt/                      mqttd.py, mqtt.sh and the unit

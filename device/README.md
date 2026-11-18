@@ -8,7 +8,7 @@ Everything in this folder is copied to `/opt/vaidk` on the camera by the install
 |---|---|---|---|
 | [Boot script](boot/README.md) | `boot/` | Boots the camera without the vendor's IoT Hub setup: joins the saved Wi-Fi network or opens the setup network | `InitCamx.service`, through a drop-in |
 | [Camera](camera/README.md) | `camera/` | Runs `vaidk-camd`, which drives the camera, microphone and speaker and hands the encoded streams to the RTSP server; with HDMI live view on, it also shows the main stream on a monitor. Starts and stops the vendor's display server to match | `vaidk-camera.service` |
-| [RTSP server](rtsp/README.md) | `rtsp/` | Serves the main stream (with audio and the talk-back channel) on port 8900 and the sub stream on port 8901 | `vaidk-rtsp.service` |
+| [RTSP server](rtsp/README.md) | `rtsp/` | Serves the main stream (with audio and the talk-back channel) on port 8900 and the sub stream on port 8901, to players that sign in with the admin account | `vaidk-rtsp.service` |
 | [Pan, tilt and zoom](onvif/README.md) | `onvif/` | The ONVIF service on port 8080: Frigate and Home Assistant find the streams and move the digital view through it | `vaidk-onvif.service` |
 | [Object detection](detect/README.md) | `detect/` | Runs the camera's own object detector on its DSP, on frames from the camera program, which draws its boxes on the main stream. Off by default | `vaidk-detect.service` |
 | [MQTT](mqtt/README.md) | `mqtt/` | Publishes what object detection sees to your MQTT broker, with Home Assistant discovery if you want it. Off by default | `vaidk-mqtt.service` |

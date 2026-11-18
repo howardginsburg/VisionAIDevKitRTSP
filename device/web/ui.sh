@@ -4,6 +4,7 @@
 #   ui.sh write-httpd-conf     write the web server's login rule for the admin account
 #   ui.sh set-admin USER       create or update the admin account (reads the password from stdin)
 #   ui.sh adopt-admin USER     make an existing sudo account (e.g. from the original setup) the admin
+#   ui.sh stream-key           unlock the streams: check the admin password (stdin) and write their key
 #   ui.sh forget               forget Wi-Fi, settings, presets and the admin account
 #   ui.sh reset                forget everything, then restart into setup mode
 #   ui.sh info                 state, address and setup network name (used by the installers)
@@ -82,12 +83,48 @@ set_admin() { # set_admin USER PASSWORD -> 0 ok, 1 failed, 2 USER is a system ac
         with_rw_root useradd -m -s /bin/sh -G sudo,inet,sdcard "$1" || return 1
         kind=created
     fi
-    printf '%s:%s\n' "$1" "$2" | chpasswd || return 1
+    account_lock
+    printf '%s:%s\n' "$1" "$2" | chpasswd; rc=$?
+    # The streams' sign-in follows the password; without a key they stay locked.
+    if [ $rc = 0 ]; then stream_key "$1" "$2" || echo "couldn't write the streams' key: they stay locked" >&2; fi
+    account_unlock
+    [ $rc = 0 ] || return 1
     allow_ssh "$1"
     if [ -n "$old" ] && [ "$old" != "$1" ]; then remove_admin "$old" "$old_kind"; fi
     mkdir -p "$DATA_DIR" && chmod 700 "$DATA_DIR"
     echo "$1 $kind" > "$ADMIN_FILE"
     reload_web
+}
+
+# ----- stream sign-in: the RTSP server checks the admin account by Digest (see rtsp/README.md) -----
+
+# One password change or key at a time, so a key never pairs one password with another's hash.
+account_lock() { mkdir -p "$RUN_DIR"; exec 9>"$RUN_DIR/account.lock"; flock 9; }
+account_unlock() { exec 9>&-; }
+shadow_hash() { awk -F: -v u="$1" '$1 == u { print $2 }' /etc/shadow; } # shadow_hash USER
+stream_key() { # stream_key USER PASSWORD -> 0 written, 1 failed, 2 not USER's password
+    # The key is "USER HA1 FINGERPRINT": HA1 = MD5(USER:realm:PASSWORD), the hash Digest needs, and the
+    # SHA-256 of USER's password hash, so the RTSP server locks the streams if the password changes some
+    # other way. printf is a shell builtin, so these steps never put the password on a command line.
+    hashed=$(shadow_hash "$1")
+    case "$hashed" in '$1$'*) method=md5 ;; '$5$'*) method=sha256 ;; '$6$'*) method=sha512 ;; *) return 1 ;; esac
+    salt=${hashed#\$?\$}; salt=${salt%\$*}
+    [ "$(printf '%s\n' "$2" | cryptpw -m "$method" -S "$salt")" = "$hashed" ] || return 2
+    ha1=$(printf '%s:%s:%s' "$1" "$STREAM_REALM" "$2" | md5sum | cut -d' ' -f1)
+    print=$(printf '%s' "$hashed" | sha256sum | cut -d' ' -f1)
+    mkdir -p "$DATA_DIR" && chmod 700 "$DATA_DIR" || return 1
+    (umask 077 && printf '%s %s %s\n' "$1" "$ha1" "$print" > "$STREAM_KEY_FILE.tmp") \
+        && mv "$STREAM_KEY_FILE.tmp" "$STREAM_KEY_FILE"
+}
+stream_auth() { sed -n 's/^auth=//p' "$RUN_DIR/rtsp.status" 2>/dev/null; } # on, off, locked; empty: no server
+stream_auth_reason() { sed -n 's/^auth_reason=//p' "$RUN_DIR/rtsp.status" 2>/dev/null; }
+read_password() { # read_password PROMPT: from the terminal without echo, or a line of stdin
+    if [ -t 0 ]; then
+        printf '%s: ' "$1" >&2
+        stty -echo; IFS= read -r pass; stty echo; printf '\n' >&2
+    else
+        IFS= read -r pass
+    fi
 }
 
 forget() {
@@ -248,6 +285,8 @@ show_message() {
         ptz-save) text="Saved the view as a preset. Frigate lists new presets after it restarts." ;;
         ptz-delete) text="Deleted the preset." ;;
         device) text="Saved." ;;
+        device-pass) text="Saved. The streams' password changed too: update it in Frigate and other players." ;;
+        stream-key) text="The streams are unlocked: players sign in with the admin account." ;;
         restart) text="Restarting the streams." ;;
         detect) text="Saved. Detection uses the new settings within a few seconds." ;;
         detect-restart) text="Saved. The streams restart in about 15 seconds; object detection starts a few seconds later." ;;
@@ -264,6 +303,8 @@ show_message() {
         err-pass) err="The admin password needs at least 8 characters." ;;
         err-pass-match) err="The admin passwords don't match." ;;
         err-account) err="The admin account couldn't be saved." ;;
+        err-stream-pass) err="That isn't the admin password." ;;
+        err-stream-key) err="The streams couldn't be unlocked. Please try again." ;;
         err-name) err="Camera names use letters, digits and dashes (up to 32)." ;;
         err-camera) err="That camera setting isn't supported." ;;
         err-tz) err="Type the time zone in POSIX form, such as EST5EDT,M3.2.0,M11.1.0, or choose one from the list." ;;
@@ -391,7 +432,18 @@ post_device() {
     set_setting NAME "$name"
     # The MQTT topic and Home Assistant's device are named after the camera.
     if [ "$name" != "$NAME" ]; then later "systemctl try-restart vaidk-mqtt.service"; fi
+    if [ -n "$pass" ] && [ "$STREAM_AUTH" != 0 ]; then back device-pass; fi
     back device
+}
+
+post_stream_key() {
+    user=$(admin_user); pass=$(field stream_pass)
+    [ -n "$user" ] && [ -n "$pass" ] || fail err-stream-pass
+    account_lock; stream_key "$user" "$pass"; rc=$?; account_unlock
+    case $rc in 0) ;; 2) fail err-stream-pass ;; *) fail err-stream-key ;; esac
+    # The RTSP server looks at the key every 2 seconds; show the page once it has.
+    i=0; while [ $i -lt 10 ] && [ "$(stream_auth)" = locked ]; do sleep 0.5; i=$((i + 1)); done
+    back stream-key
 }
 
 post_picture() { # applied while streaming
@@ -573,6 +625,7 @@ handle_post() {
         mqtt) post_mqtt ;;
         hdmi) post_hdmi ;;
         device) post_device ;;
+        stream-key) post_stream_key ;;
         restart-streams) restart_streams; back restart ;;
         reboot)
             later "sleep 3; reboot"
@@ -625,7 +678,7 @@ setup_page() {
     printf '<section class="card"><div class="card-head"><h2>1. Your Wi-Fi</h2></div>'
     network_fields auto
     printf '</section><section class="card"><div class="card-head"><h2>2. Admin account</h2></div>'
-    hint "Signs in to this page from your network, and over SSH."
+    hint "Signs in to this page from your network, to the camera's streams, and over SSH."
     printf '<div class="fields">'
     account_fields
     printf '</div></section><section class="card"><div class="card-head"><h2>3. Camera</h2></div>'
@@ -694,6 +747,11 @@ ov_streams() {
         item "Sub" "Off"
     fi
     item "Players" "$(viewers_text)"
+    case "$(stream_auth)" in
+        on) item "Sign-in" "Admin account ($(admin_user))" ;;
+        off) item "Sign-in" "Off: anyone on your network can watch" ;;
+        locked) printf '<dt>Sign-in</dt><dd><span class="badge warn">Locked</span> <a href="%s?p=video#stream-auth">Enter the admin password</a> to unlock the streams</dd>' "$SELF" ;;
+    esac
     printf '</dl>'
     tile_link video "Stream settings"
     form_start restart-streams; printf '<button class="secondary">Restart streams</button></form></div>'
@@ -874,31 +932,16 @@ temperatures() { # "processor 52 &deg;C, camera 51 &deg;C, Wi-Fi 50 &deg;C" (HTM
     if [ "${3:--}" != - ]; then out="$out${out:+, }Wi-Fi $3 &deg;C"; fi
     printf '%s' "$out"
 }
-viewers() { # "PORT ADDRESS CONNECTIONS" for each client of the RTSP streams (ports 8900 and 8901)
-    awk -v H=0123456789ABCDEF '$4 == "01" {
-            split($2, l, ":"); split($3, r, ":")
-            if (l[2] != "22C4" && l[2] != "22C5") next
-            a = r[1]
-            if (length(a) == 32) { if (substr(a, 1, 24) != "0000000000000000FFFF0000") next; a = substr(a, 25) }
-            # Little-endian hex; written without "name (" because busybox awk reads that as a call
-            for (i = 7; i >= 1; i -= 2) {
-                v = 16 * (index(H, substr(a, i, 1)) - 1) + index(H, substr(a, i + 1, 1)) - 1
-                ip = (i == 7) ? v : ip "." v
-            }
-            n[l[2] " " ip]++
-        }
-        END { for (k in n) print k, n[k] }' /proc/net/tcp /proc/net/tcp6 2>/dev/null | sort
+viewers_of() { # viewers_of main|sub -> "192.168.1.20, 192.168.1.30 (2 connections)": players, as the RTSP server lists them
+    awk -v k="$1_viewers=" 'index($0, k) == 1 {
+            n = split(substr($0, length(k) + 1), a, " ")
+            for (i = 1; i <= n; i++) c[a[i]]++
+            for (ip in c) printf "%s%s%s", (s++ ? ", " : ""), ip, (c[ip] > 1 ? " (" c[ip] " connections)" : "")
+        }' "$RUN_DIR/rtsp.status" 2>/dev/null
 }
 
 viewers_text() { # "main: 192.168.1.20; sub: none"
-    main=; sub=
-    while read -r port addr count; do
-        [ -n "$port" ] || continue
-        if [ "$count" -gt 1 ]; then addr="$addr ($count connections)"; fi
-        case "$port" in 22C4) main="$main${main:+, }$addr" ;; 22C5) sub="$sub${sub:+, }$addr" ;; esac
-    done <<EOF
-$(viewers)
-EOF
+    main=$(viewers_of main); sub=$(viewers_of sub)
     v="main: ${main:-none}"
     if [ "$SUB_ENABLED" = 1 ] || [ -n "$sub" ]; then v="$v; sub: ${sub:-none}"; fi
     printf '%s' "$v"
@@ -1065,6 +1108,39 @@ streams_section() {
     section_end
 }
 
+stream_auth_section() {
+    state=$(stream_auth)
+    case "$state" in
+        on) section_start stream-auth "Stream sign-in" on On ;;
+        off) section_start stream-auth "Stream sign-in" off Off ;;
+        locked) section_start stream-auth "Stream sign-in" warn Locked ;;
+        *) section_start stream-auth "Stream sign-in" warn "Not running" ;;
+    esac
+    user=$(h "$(admin_user)")
+    case "$state" in
+        on)
+            hint "Players sign in to both streams, and to talk-back, with the admin account: user <b>$user</b> and its password. Most take them in the stream address: <code>rtsp://$user:PASSWORD@camera-ip:8900/live</code>. The Frigate tab has Frigate's addresses." ;;
+        locked)
+            case "$(stream_auth_reason)" in
+                no-account) printf '<p class="error">The streams are locked until the admin account exists (System tab).</p>' ;;
+                password-changed) printf '<p class="error">The admin password was changed outside this page, so the streams are locked. Enter it here to unlock them.</p>' ;;
+                *) printf '<p class="error">The streams are locked until you enter the admin password here once: after an update that added stream sign-in, or when an existing account became the admin account.</p>' ;;
+            esac
+            if [ -n "$user" ]; then
+                form_start stream-key
+                printf '<div class="fields"><label>Password of <b>%s</b> <input name="stream_pass" type="password" maxlength="64" autocomplete="current-password" required></label></div>' "$user"
+                save_row "Unlock streams"
+                printf '</form>'
+            fi ;;
+        off)
+            hint "Off (<code>STREAM_AUTH=0</code> in the settings file): anyone who can reach the camera can watch the streams and use its speaker." ;;
+        *)
+            hint "The RTSP server isn't running; restart the streams or the camera (System tab)." ;;
+    esac
+    more "About stream sign-in" "Digest sign-in: the password itself never crosses the network, but the video isn't encrypted, so keep the camera on a trusted network. A new admin password is also the streams' new password: update Frigate and other players. Pan, tilt and zoom (ONVIF) has no sign-in."
+    section_end
+}
+
 picture_section() {
     section_start picture "Picture"
     form_start picture
@@ -1172,7 +1248,11 @@ talk_section() {
     printf '</select></label></div>'
     printf '<label class="check"><input type="checkbox" name="mute_mic" value="1"%s> Mute the microphones while the speaker plays, so the other end doesn'"'"'t hear itself</label>' \
         "$([ "$TALKBACK_MUTE_MIC" = 1 ] && echo ' checked')"
-    hint "A two-way audio channel on the main stream, for Frigate's talk button. It has no password: anyone who can reach the camera can use the speaker."
+    if [ "$STREAM_AUTH" != 0 ]; then
+        hint "A two-way audio channel on the main stream, for Frigate's talk button. It uses the streams' sign-in (Video tab)."
+    else
+        hint "A two-way audio channel on the main stream, for Frigate's talk button. It has no password: anyone who can reach the camera can use the speaker."
+    fi
     more "About talk-back" "It is an ONVIF backchannel with G.711 audio, which Frigate's go2rtc uses. Talking from a browser needs WebRTC and a page on HTTPS (see the Frigate tab). Volume and muting change at once; turning talk-back on or off restarts the streams."
     # Test speaker submits the chime form below, so the two buttons sit together.
     printf '<div class="actions"><button>Save</button><button class="secondary" form="chime">Test speaker</button></div></form>'
@@ -1380,7 +1460,12 @@ device_section() {
     printf '<div class="fields"><label>Camera name <input name="name" value="%s" maxlength="32" required></label>' "$(h "$NAME")"
     account_fields
     printf '</div>'
-    hint "The name is the page title, the name in Frigate's configuration and on the video, and the camera's host name. The admin account signs in to this page from your network and over SSH (<code>ssh $(h "$(admin_user)")@$(h "${ip:-camera-ip}")</code>)."
+    if [ "$STREAM_AUTH" != 0 ]; then
+        uses="this page from your network, the streams, and SSH"; note=" A new password is also the streams' password: update it in Frigate."
+    else
+        uses="this page from your network, and SSH"; note=""
+    fi
+    hint "The name is the page title, the name in Frigate's configuration and on the video, and the camera's host name. The admin account signs in to $uses (<code>ssh $(h "$(admin_user)")@$(h "${ip:-camera-ip}")</code>).$note"
     save_row "Save"
     printf '</form>'
     section_end
@@ -1393,9 +1478,13 @@ frigate_section() {
     if [ "$ONVIF" = 1 ]; then about="$about The onvif part gives Frigate's live view pan, tilt and zoom controls, and the presets saved on the Pan &amp; zoom tab."; fi
     hint "Add this to your Frigate configuration. It follows this camera's settings, so copy it again after changing them. A click selects all of it."
     hint "$about"
-    printf '<pre class="copy">'
+    if [ "$STREAM_AUTH" != 0 ]; then
+        hint "The stream addresses carry the admin account, for stream sign-in. Type its password here to fill it in below: it stays in this browser and isn't sent to the camera. Characters such as @ : / ? # % are encoded, as go2rtc needs."
+        printf '<div class="fields"><label>Admin password <input id="fill-password" type="password" autocomplete="off"></label></div>'
+    fi
+    printf '<pre class="copy" id="frigate-yaml">'
     {
-        url="rtsp://${ip:-camera-ip}"
+        if [ "$STREAM_AUTH" != 0 ]; then url="rtsp://$(admin_user):PASSWORD@${ip:-camera-ip}"; else url="rtsp://${ip:-camera-ip}"; fi
         restream="rtsp://127.0.0.1:8554/$NAME"
         if [ "$AUDIO_ENABLED" = 1 ]; then audio_role=", audio"; else audio_role=""; fi
         printf 'go2rtc:\n  streams:\n'
@@ -1439,6 +1528,10 @@ frigate_section() {
         fi
     } | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
     printf '</pre>'
+    if [ "$STREAM_AUTH" != 0 ]; then
+        # The page's only script: fills the typed password into the addresses, URL-encoded, in the browser.
+        printf '<script>(function () { var pre = document.getElementById("frigate-yaml"), box = document.getElementById("fill-password"), text = pre.textContent; box.addEventListener("input", function () { pre.textContent = text.split(":PASSWORD@").join(":" + (box.value ? encodeURIComponent(box.value) : "PASSWORD") + "@"); }); })();</script>'
+    fi
     section_end
 }
 
@@ -1501,7 +1594,7 @@ settings_page() {
     if [ -z "$MSG_S" ]; then show_message; fi
     case "$PAGE" in
         overview) overview_page ;;
-        video) streams_section; picture_section; overlay_section; hdmi_section ;;
+        video) streams_section; stream_auth_section; picture_section; overlay_section; hdmi_section ;;
         audio) mic_section; talk_section ;;
         ptz) ptz_section ;;
         detect) detect_section; mqtt_section ;;
@@ -1528,7 +1621,8 @@ wifi_page() {
             else
                 printf '<p>Open <a href="http://%s/">http://%s/</a>.</p>' "$ip" "$ip"
             fi
-            printf '<p>Streams: <code>rtsp://%s:8900/live</code> and <code>rtsp://%s:8901/live</code></p>' "$ip" "$ip" ;;
+            printf '<p>Streams: <code>rtsp://%s:8900/live</code> and <code>rtsp://%s:8901/live</code>%s</p>' "$ip" "$ip" \
+                "$([ "$STREAM_AUTH" != 0 ] && echo ', signed in with the admin account')" ;;
         failed\ wrong-password)
             notice_start "Couldn't connect"
             printf '<h1>Couldn'"'"'t join %s</h1><p>The Wi-Fi password was rejected.</p><p><a href="%s">Try again</a></p>' "$(h "$ssid")" "$again" ;;
@@ -1569,12 +1663,7 @@ case "$MODE" in
     ap|lan|entry) cgi ;;
     write-httpd-conf) write_httpd_conf ;;
     set-admin)
-        if [ -t 0 ]; then
-            printf 'New password for %s: ' "$2" >&2
-            stty -echo; IFS= read -r pass; stty echo; printf '\n' >&2
-        else
-            IFS= read -r pass
-        fi
+        read_password "New password for $2"
         valid_user "$2" || { echo "invalid username" >&2; exit 1; }
         valid_password "$pass" || { echo "the password needs 8 to 64 characters" >&2; exit 1; }
         set_admin "$2" "$pass" || { echo "could not set the admin account" >&2; exit 1; }
@@ -1586,8 +1675,20 @@ case "$MODE" in
         if [ -n "$old" ] && [ "$old" != "$2" ]; then remove_admin "$old" "$old_kind"; fi
         mkdir -p "$DATA_DIR" && chmod 700 "$DATA_DIR"
         echo "$2 adopted" > "$ADMIN_FILE"
+        # Its password isn't known here: the streams stay locked until it is entered (ui.sh stream-key).
+        rm -f "$STREAM_KEY_FILE"
         reload_web
         echo "admin account: $2" ;;
+    stream-key)
+        user=$(admin_user)
+        [ -n "$user" ] || { echo "there is no admin account" >&2; exit 1; }
+        read_password "Password for $user"
+        account_lock; stream_key "$user" "$pass"; rc=$?; account_unlock
+        case $rc in
+            0) echo "stream sign-in: the streams accept $user's password" ;;
+            2) echo "that isn't $user's password" >&2; exit 1 ;;
+            *) echo "couldn't write the streams' key" >&2; exit 1 ;;
+        esac ;;
     forget) forget ;;
     reset) forget; sync; sleep 2; reboot ;;
     info)
@@ -1599,6 +1700,7 @@ case "$MODE" in
         echo "setup_ssid=$(sed -n 's/^ssid=//p' /data/misc/wifi/hostapd_virtual.conf 2>/dev/null)"
         echo "streaming=$(if [ -e "$RUN_DIR/streaming" ]; then echo yes; else echo no; fi)"
         echo "audio=$(if [ "$AUDIO_ENABLED" = 1 ]; then echo on; else echo off; fi)"
-        echo "admin=$(admin_user)" ;;
-    *) sed -n '2,9p' "$0" >&2; exit 2 ;;
+        echo "admin=$(admin_user)"
+        echo "stream_auth=$(stream_auth)" ;;
+    *) sed -n '2,10p' "$0" >&2; exit 2 ;;
 esac

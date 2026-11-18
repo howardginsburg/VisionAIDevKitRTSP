@@ -5,6 +5,9 @@ RUN_DIR=/run/vaidk
 SETTINGS_FILE=$DATA_DIR/vaidk.conf
 WIFI_CONF=$DATA_DIR/wpa_supplicant.conf
 ADMIN_FILE=$DATA_DIR/admin
+# Stream sign-in: the RTSP server's Digest key for the admin account (written by web/ui.sh), and its realm.
+STREAM_KEY_FILE=$DATA_DIR/stream-key
+STREAM_REALM="Vision AI DevKit"
 AP_PREFIX=192.168.143.
 
 load_settings() {
